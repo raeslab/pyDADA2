@@ -730,6 +730,13 @@ rv$dup_mergers <- list(
   seqtab_nsamples = mat_list(suppressMessages(makeSequenceTable(mg2, orderBy = "nsamples"))),
   seqtab_unordered = mat_list(suppressMessages(makeSequenceTable(mg2, orderBy = NULL)))
 )
+# Synthetic mergers whose duplicates create ties in the total abundance.
+syn <- list(
+  a = data.frame(sequence = c("TTTTGG", "AAAACC", "TTTTGG", "CCCCAA"), abundance = c(1L, 2L, 1L, 2L)),
+  b = data.frame(sequence = c("GGGGTT", "ACACAC", "GGGGTT"), abundance = c(1L, 3L, 1L))
+)
+rv$dup_synthetic <- list(mergers = lapply(syn, df_list),
+                         seqtab = mat_list(suppressMessages(makeSequenceTable(syn))))
 rv$get_sequences_collapse <- getSequences(c("acgt", "ACGT", "GG", "acgt"), collapse = TRUE)
 tx_tab <- matrix(c("Bacteria", "Bacteria", "Firmicutes", NA), nrow = 2,
                  dimnames = list(c("ACGTAC", "GGTTAA"), c("Kingdom", "Phylum")))

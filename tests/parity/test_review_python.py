@@ -49,6 +49,19 @@ def test_make_sequence_table_duplicate_mergers(rv):
         np.testing.assert_array_equal(got.to_numpy(), exp.to_numpy())
 
 
+def test_make_sequence_table_tied_duplicates(rv):
+    """Duplicates merged in sorted order (R's tapply) decide the order of tied columns."""
+    fx = rv["dup_synthetic"]
+    mergers = {
+        name: pd.DataFrame({"sequence": m["sequence"], "abundance": m["abundance"]})
+        for name, m in fx["mergers"].items()
+    }
+    got = dada2.make_sequence_table(mergers)
+    exp = _table(fx["seqtab"])
+    assert got.columns.tolist() == exp.columns.tolist()
+    np.testing.assert_array_equal(got.to_numpy(), exp.to_numpy())
+
+
 def test_get_sequences_collapse_and_taxonomy_table(rv):
     assert (
         dada2.get_sequences(["acgt", "ACGT", "GG", "acgt"], collapse=True)
