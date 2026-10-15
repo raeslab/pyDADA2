@@ -149,9 +149,8 @@ class TaxonomyClassifier(BaseEstimator):
             np.array([i for i, _ in records], dtype=object), use_na_sentinel=False
         )
         tax = [str(i).strip() for i in id_uniques]
-        if all(
-            re.search(r"FU\|re[pf]s", t.strip()) for t, _ in records[:10]
-        ):  # UNITE general FASTA
+        first_ids = [i.strip() for i, _ in records[:10]]
+        if all(re.search(r"FU\|re[pf]s", t) for t in first_ids):  # UNITE general FASTA
             logger.info("UNITE fungal taxonomic reference detected.")
             tax = [t.split("|")[4] if len(t.split("|")) > 4 else "" for t in tax]
             tax = [re.sub(r"[pcofg]__unidentified;", _UNSPECIFIED + ";", t) for t in tax]
