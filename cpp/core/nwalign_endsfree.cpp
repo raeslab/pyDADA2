@@ -3,6 +3,8 @@
 //
 // Changes for pydada2:
 //  * Rcpp::stop -> dada2_stop; added al_free helper.
+//  * raw_align: the ordered k-mer distance (gapless screen) is only computed when the k-mer
+//    screen passed (it was computed and discarded for ~75 % of comparisons).
 
 #include <string.h>
 #include <stdlib.h>
@@ -37,7 +39,8 @@ char **raw_align(Raw *raw1, Raw *raw2, int match, int mismatch, int gap_p, int h
   }
   
   // GAPLESS SCREEN (using KMERs)
-  if(use_kmers && gapless) {
+  // pydada2: skipped when the k-mer screen has already rejected the pair (kodist is then unused).
+  if(use_kmers && gapless && !(kdist > kdist_cutoff)) {
     if(SSE >= 1) {
       kodist = kord_dist_SSEi(raw1->kord, raw1->length, raw2->kord, raw2->length, KMER_SIZE);
     } else {

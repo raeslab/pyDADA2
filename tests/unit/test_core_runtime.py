@@ -176,3 +176,25 @@ def test_parallel_for_huge_thread_request_is_capped():
     vals, chunks = core._parallel_selftest(100, 1, 100_000)
     np.testing.assert_array_equal(vals, np.arange(100, dtype=np.int64) ** 2)
     assert chunks == 100
+
+
+def test_nwvec_scratch_reuse_and_long_sequences():
+    # The vectorised aligner reuses per-thread buffers: alignments must not depend on what was
+    # aligned before (sizes growing and shrinking), and sequences longer than the old fixed
+    # buffers (SEQLEN = 9999) must work.
+    rng = np.random.default_rng(5)
+
+    def pair(n):
+        a = rng.choice(list("ACGT"), n)
+        b = a.copy()
+        idx = rng.choice(n, max(1, n // 50), replace=False)
+        b[idx] = rng.choice(list("ACGT"), idx.size)
+        return "".join(a), "".join(np.delete(b, idx[:2]))
+
+    pairs = [pair(n) for n in (250, 12000, 40, 251, 3000, 250)]
+    s1 = [p[0] for p in pairs]
+    s2 = [p[1] for p in pairs]
+    batch = core.nwvec(s1, s2, 5, -4, -8, 16, True)
+    for (a, b), (al0, al1) in zip(pairs, batch, strict=True):
+        assert al0.replace("-", "") == a and al1.replace("-", "") == b
+        assert core.nwvec([a], [b], 5, -4, -8, 16, True)[0] == (al0, al1)
