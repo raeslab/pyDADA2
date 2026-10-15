@@ -6,6 +6,11 @@
 //  * Unequal-length alignment strings: upstream warned and returned NULL; now
 //    std::invalid_argument. Empty strings in eval_pair return zeros (upstream read out of bounds).
 //  * Temporary C buffers are managed by std::vector/std::unique_ptr (exception safety).
+//  * nwalign rejects non-ACGT input (R checks this in its nwalign() wrapper; the C code indexes
+//    the 4x4 score matrix with the nucleotide code and read out of bounds otherwise).
+//  * k-mer helpers validate kmer_size before sizing their 4^k buffers (upstream computed
+//    1 << 2k first: undefined for k >= 16, a 2 x 2 GiB allocation for k = 15).
+//  * kord_dist(SSE=1) uses kord_dist_SSEi on every platform (exact scalar emulation off x86).
 
 #include <memory>
 
@@ -18,6 +23,11 @@ struct CFree {
   void operator()(void *p) const { free(p); }
 };
 using CStr = std::unique_ptr<char, CFree>;
+
+// The k-mer routines (kmers.cpp) accept 3..8 (count vectors) or 1..8 (ordered k-mers).
+void check_kmer_size(int kmer_size, int min_k) {
+  if(kmer_size < min_k || kmer_size > 8) { dada2_stop_invalid("Invalid kmer-size (must be %i..8).", min_k); }
+}
 
 struct AlFree {
   void operator()(char **al) const { al_free(al); }
@@ -34,6 +44,9 @@ std::pair<std::string, std::string> nwalign(const std::string &s1, const std::st
                                             int mismatch, int gap_p, int homo_gap_p, int band,
                                             bool endsfree) {
   int i, j;
+  for(bool ok : is_acgt({s1, s2})) {
+    if(!ok) { dada2_stop_invalid("Sequences must contain only A/C/G/T characters."); }
+  }
   // Make integer-ized c-style sequence strings
   CStr seq1((char *) malloc(s1.length()+1)); //E
   CStr seq2((char *) malloc(s2.length()+1)); //E
@@ -179,6 +192,7 @@ std::vector<bool> is_acgt(const std::vector<std::string> &seqs) {
 std::vector<double> kmer_dist(const std::vector<std::string> &s1, const std::vector<std::string> &s2,
                               int kmer_size) {
   size_t len1 = 0, len2 = 0;
+  check_kmer_size(kmer_size, 3);
   size_t n_kmers = (1 << (2*kmer_size));  // 4^k kmers
 
   size_t nseqs = s1.size();
@@ -202,6 +216,7 @@ std::vector<double> kmer_dist(const std::vector<std::string> &s1, const std::vec
 std::vector<double> kord_dist(const std::vector<std::string> &s1, const std::vector<std::string> &s2,
                               int kmer_size, int SSE) {
   size_t len1 = 0, len2 = 0, maxlen=0;
+  check_kmer_size(kmer_size, 1);
 
   size_t nseqs = s1.size();
   if(nseqs != s2.size()) { dada2_stop_invalid("Mismatched numbers of sequences."); }
@@ -222,7 +237,7 @@ std::vector<double> kord_dist(const std::vector<std::string> &s1, const std::vec
     CStr seq2(intstr(s2[i].c_str()));
     len2 = s2[i].size();
     assign_kmer_order(kord2.data(), seq2.get(), kmer_size);
-    if(SSE==1 && X64) {
+    if(SSE==1) {
       kdist[i] = kord_dist_SSEi(kord1.data(), len1, kord2.data(), len2, kmer_size);
     } else {
       kdist[i] = ::kord_dist(kord1.data(), len1, kord2.data(), len2, kmer_size);
@@ -235,6 +250,7 @@ std::vector<int> kmer_matches(const std::vector<std::string> &s1,
                               const std::vector<std::string> &s2, int kmer_size) {
   size_t len1 = 0, len2 = 0, maxlen=0;
   size_t klen1 = 0, klen2 = 0, klen_min = 0;
+  check_kmer_size(kmer_size, 1);
   int matches=0;
 
   size_t nseqs = s1.size();
@@ -272,6 +288,7 @@ std::vector<int> kmer_matches(const std::vector<std::string> &s1,
 std::vector<int> kdist_matches(const std::vector<std::string> &s1,
                                const std::vector<std::string> &s2, int kmer_size) {
   uint16_t dotsum = 0;
+  check_kmer_size(kmer_size, 3);
   size_t n_kmers = (1 << (2*kmer_size));  // 4^k kmers
 
   size_t nseqs = s1.size();

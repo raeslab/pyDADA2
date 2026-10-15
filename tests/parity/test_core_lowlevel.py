@@ -266,3 +266,69 @@ def test_remove_primers_max_mismatch_ge_length(tmp_path):
     assert [len(r.sequence) for r in recs] == fx["output"]["widths"]
     txt = "".join(f"{r.name}\n{r.sequence}\n{r.qualities}\n" for r in recs)
     assert hashlib.md5(txt.encode()).hexdigest() == scalar(fx["output"]["md5"])
+
+
+def test_kmer_size_and_acgt_validation():
+    s1, s2 = ["ACGTACGTAC"], ["ACGTACGTAA"]
+    for k in (2, 9, 15, 16, -1):
+        with pytest.raises(ValueError, match="kmer-size"):
+            core.kmer_dist(s1, s2, k)
+        with pytest.raises(ValueError, match="kmer-size"):
+            core.kdist_matches(s1, s2, k)
+    for k in (0, 9):
+        with pytest.raises(ValueError, match="kmer-size"):
+            core.kmer_matches(s1, s2, k)
+        with pytest.raises(ValueError, match="kmer-size"):
+            core.kord_dist(s1, s2, k, 0)
+    with pytest.raises(ValueError, match="A/C/G/T"):
+        core.nwalign("ACNT", "ACGT", MATCH, MISMATCH, GAP, GAP, -1, True)
+    # the vectorized aligner only compares letters; R accepts any letters there
+    assert core.nwvec(["ACNNGT"], ["ACGGT"], MATCH, MISMATCH, GAP, -1, True) == [
+        ("ACNNGT", "ACG-GT")
+    ]
+
+
+def test_kord_dist_sse_paths():
+    # SSE=1 uses the minimum length (kord_dist_SSEi, emulated exactly off x86); SSE=0 returns -1
+    # for unequal lengths. The result must not depend on the platform.
+    assert core.kord_dist(["ACGTACGTAC"], ["ACGTACGTAAGG"], 5, 0) == [-1.0]
+    assert core.kord_dist(["ACGTACGTAC"], ["ACGTACGTAAGG"], 5, 1) == [pytest.approx(1 / 6)]
+
+
+def test_int32_matrices_reject_out_of_range():
+    seqs = ["ACGTACGTACGTAAAACCCCGGGGTTTT", "ACGTACGTACGTAAAACCCCGGGGTTTA"]
+    args = (seqs, 1.5, 2, False, 4, MATCH, MISMATCH, GAP, 16)
+    ref = core.table_bimera(np.array([[100, 3]], dtype=np.int32), *args)
+    for mat in (
+        np.array([[100, 3]], dtype=np.int64),
+        np.asfortranarray([[100, 3]], dtype=np.int32),
+    ):
+        got = core.table_bimera(mat, *args)
+        assert got[0].tolist() == ref[0].tolist() and got[1].tolist() == ref[1].tolist()
+    for bad in (np.array([[2**32 + 5, 3]], dtype=np.int64), np.array([[1e12, 3.0]])):
+        with pytest.raises(ValueError, match="int32 range"):
+            core.table_bimera(bad, *args)
+    q = np.array([[30, 20, core.NA_QUAL]], dtype=np.int64)
+    np.testing.assert_array_equal(core.matrix_ee(q), core.matrix_ee(q.astype(np.int32)))
+    with pytest.raises(ValueError, match="int32 range"):
+        core.matrix_ee(np.array([[30, 2**33]], dtype=np.int64))
+
+
+def test_dereplicator_concurrent_add_chunk():
+    import threading
+
+    d = core.Dereplicator()
+    seqs, quals = ["ACGT" * 30, "ACGA" * 30] * 50, ["I" * 120] * 100
+
+    def work():
+        for _ in range(100):
+            d.add_chunk(seqs, quals, 33)
+
+    threads = [threading.Thread(target=work) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    res = d.finish()
+    assert res["abundance"].tolist() == [30000, 30000]
+    assert len(res["map"]) == 60000

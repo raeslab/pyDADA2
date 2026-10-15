@@ -14,8 +14,10 @@
 #include <nanobind/stl/vector.h>
 
 #include <atomic>
+#include <climits>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -38,6 +40,23 @@ constexpr const char *UPSTREAM_VERSION = "1.36.0";
 
 template <typename T>
 using CArray = nb::ndarray<const T, nb::ndim<2>, nb::c_contig, nb::device::cpu>;
+
+// Integer matrices for the R-integer kernels (table_bimera, matrix_ee). Each is bound twice: an
+// int32 C-contiguous array is used in place; any other numeric array is converted to int64 by
+// nanobind (that overload is registered first, so implicit conversions go there) and copied
+// with a range check, instead of nanobind's narrowing cast silently wrapping (2**32 + 5 -> 5).
+using I64Array = nb::ndarray<const int64_t, nb::ndim<2>, nb::c_contig, nb::device::cpu>;
+
+std::vector<int32_t> checked_int32(const I64Array &a, const char *name) {
+  std::vector<int32_t> out(a.size());
+  const int64_t *p = a.data();
+  for (size_t i = 0; i < out.size(); ++i) {
+    if (p[i] < INT32_MIN || p[i] > INT32_MAX)
+      throw std::invalid_argument(std::string(name) + " has values outside the int32 range.");
+    out[i] = static_cast<int32_t>(p[i]);
+  }
+  return out;
+}
 
 // Move a std::vector into a NumPy array (1-D or 2-D) without copying.
 template <typename T>
@@ -82,6 +101,36 @@ struct PyHandlers {
     };
   }
 };
+
+// Dereplicator with a per-instance mutex: add_chunk/finish release the GIL, so concurrent calls
+// on one instance from different Python threads must not race on its hash table.
+struct LockedDereplicator {
+  dada2::Dereplicator impl;
+  std::mutex mutex;
+};
+
+nb::ndarray<nb::numpy, double> matrix_ee_py(const int32_t *quals, size_t nrow, size_t ncol) {
+  std::vector<double> out;
+  {
+    nb::gil_scoped_release release;
+    out = dada2::matrix_ee(quals, static_cast<int>(nrow), static_cast<int>(ncol));
+  }
+  return to_numpy(std::move(out));
+}
+
+std::pair<nb::ndarray<nb::numpy, int>, nb::ndarray<nb::numpy, int>> table_bimera_py(
+    const int32_t *mat, size_t nrow, size_t ncol, const std::vector<std::string> &seqs,
+    double min_fold, int min_abund, bool allow_one_off, int min_one_off_par_dist, int match,
+    int mismatch, int gap_p, int max_shift, int n_threads) {
+  std::pair<std::vector<int>, std::vector<int>> r;
+  {
+    nb::gil_scoped_release release;
+    r = dada2::table_bimera(mat, static_cast<int>(nrow), static_cast<int>(ncol), seqs, min_fold,
+                            min_abund, allow_one_off, min_one_off_par_dist, match, mismatch, gap_p,
+                            max_shift, n_threads);
+  }
+  return std::make_pair(to_numpy(std::move(r.first)), to_numpy(std::move(r.second)));
+}
 
 nb::dict dada_output_to_dict(dada2::DadaOutput &&o) {
   nb::dict d;
@@ -246,16 +295,19 @@ NB_MODULE(_core, m) {
   m.attr("NA_QUAL") = dada2::NA_QUAL;
   m.def(
       "matrix_ee",
-      [](CArray<int32_t> quals) {
-        std::vector<double> out;
-        {
-          nb::gil_scoped_release release;
-          out = dada2::matrix_ee(quals.data(), static_cast<int>(quals.shape(0)),
-                                 static_cast<int>(quals.shape(1)));
-        }
-        return to_numpy(std::move(out));
+      [](I64Array quals) {
+        const std::vector<int32_t> q = checked_int32(quals, "quals");
+        return matrix_ee_py(q.data(), quals.shape(0), quals.shape(1));
       },
-      "quals"_a, "Expected errors per row of an int32 quality matrix (NA_QUAL ends a row).");
+      "quals"_a);
+  m.def(
+      "matrix_ee",
+      [](CArray<int32_t> quals) {
+        return matrix_ee_py(quals.data(), quals.shape(0), quals.shape(1));
+      },
+      "quals"_a,
+      "Expected errors per row of an int32 quality matrix (NA_QUAL ends a row). Other integer\n"
+      "dtypes are accepted if every value fits in int32.");
 
   // ----------------------------------------------------------------------------- chimera ---
   m.def("is_bimera", &dada2::is_bimera, "sq"_a, "pars"_a, "allow_one_off"_a,
@@ -264,23 +316,31 @@ NB_MODULE(_core, m) {
         "Whether sq is a bimera of two of the given parents.");
   m.def(
       "table_bimera",
+      [](I64Array mat, const std::vector<std::string> &seqs, double min_fold, int min_abund,
+         bool allow_one_off, int min_one_off_par_dist, int match, int mismatch, int gap_p,
+         int max_shift, int n_threads) {
+        const std::vector<int32_t> v = checked_int32(mat, "mat");
+        return table_bimera_py(v.data(), mat.shape(0), mat.shape(1), seqs, min_fold, min_abund,
+                               allow_one_off, min_one_off_par_dist, match, mismatch, gap_p,
+                               max_shift, n_threads);
+      },
+      "mat"_a, "seqs"_a, "min_fold"_a, "min_abund"_a, "allow_one_off"_a,
+      "min_one_off_par_dist"_a, "match"_a, "mismatch"_a, "gap_p"_a, "max_shift"_a,
+      "n_threads"_a = 1);
+  m.def(
+      "table_bimera",
       [](CArray<int32_t> mat, const std::vector<std::string> &seqs, double min_fold, int min_abund,
          bool allow_one_off, int min_one_off_par_dist, int match, int mismatch, int gap_p,
          int max_shift, int n_threads) {
-        std::pair<std::vector<int>, std::vector<int>> r;
-        {
-          nb::gil_scoped_release release;
-          r = dada2::table_bimera(mat.data(), static_cast<int>(mat.shape(0)),
-                                  static_cast<int>(mat.shape(1)), seqs, min_fold, min_abund,
-                                  allow_one_off, min_one_off_par_dist, match, mismatch, gap_p,
-                                  max_shift, n_threads);
-        }
-        return std::make_pair(to_numpy(std::move(r.first)), to_numpy(std::move(r.second)));
+        return table_bimera_py(mat.data(), mat.shape(0), mat.shape(1), seqs, min_fold, min_abund,
+                               allow_one_off, min_one_off_par_dist, match, mismatch, gap_p,
+                               max_shift, n_threads);
       },
       "mat"_a, "seqs"_a, "min_fold"_a, "min_abund"_a, "allow_one_off"_a,
       "min_one_off_par_dist"_a, "match"_a, "mismatch"_a, "gap_p"_a, "max_shift"_a,
       "n_threads"_a = 1,
-      "Per-sequence (nflag, nsam) bimera votes for a samples x sequences int32 table.");
+      "Per-sequence (nflag, nsam) bimera votes for a samples x sequences int32 table. Other\n"
+      "integer dtypes are accepted if every value fits in int32.");
 
   // ---------------------------------------------------------------------------- taxonomy ---
   nb::class_<dada2::TaxonomyModel>(m, "TaxonomyModel",
@@ -374,21 +434,23 @@ NB_MODULE(_core, m) {
   m.def("dna_less", &dada2::dna_less, "a"_a, "b"_a,
         "Biostrings lexical order of two DNA strings (IUPAC bit codes).");
 
-  nb::class_<dada2::Dereplicator>(m, "Dereplicator", "Streaming dereplication (K2).")
+  nb::class_<LockedDereplicator>(m, "Dereplicator", "Streaming dereplication (K2).")
       .def(nb::init<>())
       .def(
           "add_chunk",
-          [](dada2::Dereplicator &d, const std::vector<std::string> &seqs,
+          [](LockedDereplicator &d, const std::vector<std::string> &seqs,
              const std::vector<std::string> &quals, int qual_offset) {
             nb::gil_scoped_release release;
-            d.add_chunk(seqs, quals, qual_offset);
+            std::lock_guard<std::mutex> lock(d.mutex);
+            d.impl.add_chunk(seqs, quals, qual_offset);
           },
           "seqs"_a, "quals"_a, "qual_offset"_a)
-      .def("finish", [](const dada2::Dereplicator &d) {
+      .def("finish", [](LockedDereplicator &d) {
         dada2::Dereplicator::Result r;
         {
           nb::gil_scoped_release release;
-          r = d.finish();
+          std::lock_guard<std::mutex> lock(d.mutex);
+          r = d.impl.finish();
         }
         const size_t nu = r.uniques.size();
         nb::dict out;

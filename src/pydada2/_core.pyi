@@ -2,7 +2,7 @@
 """Private C++ core of pydada2 (ported from DADA2). Not a public API."""
 
 from collections.abc import Callable, Sequence
-from typing import Annotated
+from typing import Annotated, overload
 
 import numpy
 from numpy.typing import NDArray
@@ -117,13 +117,21 @@ def match_ref(seqs: Sequence[str], ref: str, word_size: int, non_overlapping: bo
 
 NA_QUAL: int = -2147483648
 
+@overload
+def matrix_ee(
+    quals: Annotated[
+        NDArray[numpy.int64], dict(shape=(None, None), order="C", device="cpu", writable=False)
+    ],
+) -> NDArray[numpy.float64]: ...
+@overload
 def matrix_ee(
     quals: Annotated[
         NDArray[numpy.int32], dict(shape=(None, None), order="C", device="cpu", writable=False)
     ],
 ) -> NDArray[numpy.float64]:
     """
-    Expected errors per row of an int32 quality matrix (NA_QUAL ends a row).
+    Expected errors per row of an int32 quality matrix (NA_QUAL ends a row). Other integer
+    dtypes are accepted if every value fits in int32.
     """
 
 def is_bimera(
@@ -138,6 +146,23 @@ def is_bimera(
 ) -> bool:
     """Whether sq is a bimera of two of the given parents."""
 
+@overload
+def table_bimera(
+    mat: Annotated[
+        NDArray[numpy.int64], dict(shape=(None, None), order="C", device="cpu", writable=False)
+    ],
+    seqs: Sequence[str],
+    min_fold: float,
+    min_abund: int,
+    allow_one_off: bool,
+    min_one_off_par_dist: int,
+    match: int,
+    mismatch: int,
+    gap_p: int,
+    max_shift: int,
+    n_threads: int = 1,
+) -> tuple[NDArray[numpy.int32], NDArray[numpy.int32]]: ...
+@overload
 def table_bimera(
     mat: Annotated[
         NDArray[numpy.int32], dict(shape=(None, None), order="C", device="cpu", writable=False)
@@ -154,7 +179,8 @@ def table_bimera(
     n_threads: int = 1,
 ) -> tuple[NDArray[numpy.int32], NDArray[numpy.int32]]:
     """
-    Per-sequence (nflag, nsam) bimera votes for a samples x sequences int32 table.
+    Per-sequence (nflag, nsam) bimera votes for a samples x sequences int32 table. Other
+    integer dtypes are accepted if every value fits in int32.
     """
 
 class TaxonomyModel:
