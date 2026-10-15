@@ -330,9 +330,13 @@ def assign_taxonomy(
     return clf.predict(seqs, return_bootstrap=output_bootstraps)
 
 
+_WS = re.compile(r"[ \t\n\r\f\v]")
+
+
 def _r_split_ws(s: str) -> list[str]:
     r"""R's ``strsplit(s, "\\s")``: empty fields are kept, except a single trailing one."""
-    parts = re.split(r"[ \t\n\r\f\v]", s)
+    # Printable strings contain none of \t\n\r\f\v, so splitting on " " is the same split.
+    parts = s.split(" ") if s.isprintable() else _WS.split(s)
     if parts[-1] == "":
         parts.pop()
     return parts

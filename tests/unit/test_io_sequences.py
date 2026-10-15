@@ -120,3 +120,42 @@ def test_seq_complexity_errors():
     with pytest.raises(ValueError, match="larger than the kmer_size"):
         dada2.seq_complexity(["ACGTACGT"], kmer_size=4, window=3)
     assert np.isnan(dada2.seq_complexity(["A"])[0])
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b">a b \r\nACGT\r\nacgt\r\n>c\r\nGG\r\n",
+        b">x  y  \n\nAC\n  gt  \n# comment\nNN\n>z\n\n",
+        b"",
+        b"\n\n  \n",
+        b"  >lead\nACGT\n>b\nTT\n",
+        b">a\nACGT\n>b  \nTT",
+        b"@r1 x\nACGT\n+\nIIII\n",
+    ],
+)
+def test_read_fasta_matches_dnaio(tmp_path, content):
+    import dnaio
+
+    from pydada2.io import read_fasta
+
+    p = tmp_path / ("x.fq" if content.startswith(b"@") else "x.fa")
+    p.write_bytes(content)
+    with dnaio.open(p) as r:
+        expected = [(rec.name, rec.sequence.upper()) for rec in r]
+    assert read_fasta(p) == expected
+    raw = read_fasta(p, raw_ids=True)
+    assert [s for _, s in raw] == [s for _, s in expected]
+    assert [h.rstrip() for h, _ in raw] == [h for h, _ in expected]
+
+
+@pytest.mark.parametrize("content", [">Ö name\nACGT\n", ">n\nACGÖ\n"])
+def test_read_fasta_non_ascii_raises_like_dnaio(tmp_path, content):
+    import dnaio
+
+    from pydada2.io import read_fasta
+
+    p = tmp_path / "x.fa"
+    p.write_bytes(content.encode("utf-8"))
+    with pytest.raises(dnaio.exceptions.FastaFormatError, match="must be ASCII encoded"):
+        read_fasta(p)

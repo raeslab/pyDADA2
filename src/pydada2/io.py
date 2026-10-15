@@ -7,7 +7,7 @@ Solexa/Illumina 1.3-1.7) is detected per chunk exactly like ShortRead's ``qualit
 
 from __future__ import annotations
 
-import itertools
+import io
 import os
 import re
 from collections.abc import Iterable, Iterator, Sequence
@@ -201,26 +201,56 @@ def read_fasta(path: PathLike, *, raw_ids: bool = False) -> list[tuple[str, str]
     list of (str, str)
         ``(id, sequence)`` pairs; sequences are upper-cased.
     """
-    with dnaio.open(os.fspath(path), mode="r") as reader:
-        records = [(rec.name, s if (s := rec.sequence).isupper() else s.upper()) for rec in reader]
-    if raw_ids and records:
-        headers = _raw_fasta_headers(path)
-        if headers is not None and len(headers) == len(records):
-            records = [(h, s) for h, (_, s) in zip(headers, records, strict=True)]
-    return records
+    if _starts_with_fasta_header(path):
+        return _read_fasta_lines(path, raw_ids)
+    with dnaio.open(os.fspath(path), mode="r") as reader:  # FASTQ (or unrecognised: dnaio errors)
+        return [(rec.name, s if (s := rec.sequence).isupper() else s.upper()) for rec in reader]
 
 
-def _raw_fasta_headers(path: PathLike) -> list[str] | None:
-    """Header lines of a FASTA file without the line terminator (None for other formats)."""
+def _starts_with_fasta_header(path: PathLike) -> bool:
+    """Tell whether the content is FASTA (first non-blank character ">") or empty."""
     with xopen(os.fspath(path), "rb") as fh:
-        first = fh.read(1)
-        if first != b">":
-            return None
-        out = []
-        for line in itertools.chain([b">" + fh.readline()], fh):
-            if line.startswith(b">"):
-                out.append(line[1:].rstrip(b"\r\n").decode("latin-1"))
-        return out
+        head = fh.read(1024).lstrip()
+    return not head or head[:1] == b">"
+
+
+def _read_fasta_lines(path: PathLike, raw_ids: bool) -> list[tuple[str, str]]:
+    """FASTA records exactly as ``dnaio.FastaReader`` yields them, in one pass and faster.
+
+    Same line handling as dnaio (text decoding, ``strip()`` of every line, blank and ``#`` lines
+    skipped, sequence lines joined). With ``raw_ids`` a header keeps everything after ">" up to
+    the line terminator, including the trailing whitespace dnaio removes. Non-ASCII content is
+    handed to dnaio, which raises its own error.
+    """
+    out: list[tuple[str, str]] = []
+    name: str | None = None
+    seq: list[str] = []
+    ascii_ok = True
+    with xopen(os.fspath(path), "rb") as fb, io.TextIOWrapper(fb) as fh:
+        for line in fh:
+            s = line.strip()
+            if not s:
+                continue
+            if s[0] == ">":
+                if name is not None:
+                    q = "".join(seq)
+                    ascii_ok = ascii_ok and name.isascii() and q.isascii()
+                    out.append((name, q if q.isupper() else q.upper()))
+                name = line[1:].rstrip("\r\n") if raw_ids and line[0] == ">" else s[1:]
+                seq = []
+            elif s[0] == "#":
+                continue
+            elif name is not None:
+                seq.append(s)
+    if name is not None:
+        q = "".join(seq)
+        ascii_ok = ascii_ok and name.isascii() and q.isascii()
+        out.append((name, q if q.isupper() else q.upper()))
+    if not ascii_ok:
+        with dnaio.open(os.fspath(path), mode="r") as reader:
+            for _ in reader:  # raises dnaio's FastaFormatError
+                pass
+    return out
 
 
 def write_fasta(

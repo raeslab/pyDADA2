@@ -93,10 +93,18 @@ def make_sequence_table(samples: Any, /, *, order_by: OrderBy = "abundance") -> 
     mat = np.zeros((len(unqs), len(cols)), dtype=np.int64)
     for i, (seqs, ab) in enumerate(unqs):
         mat[i, [cols[sq] for sq in seqs]] = ab
-    tab = pd.DataFrame(mat, columns=list(cols))
-    if names is not None:
-        tab.index = pd.Index(names)
-    return _order_columns(tab, order_by)
+    colnames = list(cols)
+    if order_by is not None:  # as _order_columns, on the array (no pandas reindexing)
+        if order_by == "abundance":
+            key = mat.sum(axis=0)
+        elif order_by == "nsamples":
+            key = (mat > 0).sum(axis=0)
+        else:
+            raise ValueError("order_by must be 'abundance', 'nsamples' or None.")
+        order = np.argsort(-key, kind="stable")
+        mat = mat[:, order]
+        colnames = [colnames[j] for j in order]
+    return pd.DataFrame(mat, columns=colnames, index=pd.Index(names) if names is not None else None)
 
 
 def _check_table(tab: Any, i: int) -> pd.DataFrame:

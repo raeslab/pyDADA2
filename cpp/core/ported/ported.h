@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -145,9 +146,10 @@ std::vector<bool> bimera_denovo(const std::vector<std::string> &seqs,
 // ------------------------------------------------------------------- K8 species ---
 // For each query, the (sorted, 0-based) indices of the references containing it exactly
 // (also in reverse complement when try_rc).
+// refs are views: the caller keeps the reference strings alive during the call.
 std::vector<std::vector<int>> species_hits(const std::vector<std::string> &queries,
-                                           const std::vector<std::string> &refs, bool try_rc,
-                                           int n_threads);
+                                           const std::vector<std::string_view> &refs,
+                                           bool try_rc, int n_threads);
 
 }  // namespace dada2
 

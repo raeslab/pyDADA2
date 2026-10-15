@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <string>
+#include <string_view>
 #include <unordered_map>
 
 #include "../dada.h"
@@ -22,7 +24,7 @@ namespace dada2 {
 
 namespace {
 
-std::string rc_acgt(const std::string &s) {
+std::string rc_acgt(std::string_view s) {
   std::string r(s.rbegin(), s.rend());
   for (char &c : r) {
     switch (c) {
@@ -47,15 +49,10 @@ std::string rc_acgt(const std::string &s) {
 }  // namespace
 
 std::vector<std::vector<int>> species_hits(const std::vector<std::string> &queries,
-                                           const std::vector<std::string> &refs, bool try_rc,
-                                           int n_threads) {
+                                           const std::vector<std::string_view> &refs,
+                                           bool try_rc, int n_threads) {
   const size_t nq = queries.size();
   const size_t nr = refs.size();
-  std::vector<std::string> rcs;
-  if (try_rc) {
-    rcs.reserve(nr);
-    for (const auto &r : refs) rcs.push_back(rc_acgt(r));
-  }
   // Group the distinct queries by length: rolling hash of each -> (query text, query indices).
   constexpr uint64_t B = 1099511628211ULL;  // odd multiplier, arithmetic mod 2^64
   auto hash = [](const char *p, size_t n) {
@@ -99,12 +96,14 @@ std::vector<std::vector<int>> species_hits(const std::vector<std::string> &queri
   }
   std::vector<std::vector<int>> per_ref(nr);
   auto body = [&](size_t b, size_t e) {
+    std::string rc;  // reverse complement of the current reference (try_rc), built per thread
     for (size_t r = b; r < e; ++r) {
       std::vector<int> &out = per_ref[r];
+      if (try_rc) rc = rc_acgt(refs[r]);
       for (const auto &g : groups) {
         const size_t L = g.len;
         for (int pass = 0; pass < (try_rc ? 2 : 1); ++pass) {
-          const std::string &s = pass == 0 ? refs[r] : rcs[r];
+          const std::string_view s = pass == 0 ? refs[r] : std::string_view(rc);
           if (s.size() < L) continue;
           const char *d = s.data();
           uint64_t h = hash(d, L);

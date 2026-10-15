@@ -162,6 +162,25 @@ nb::dict dada_output_to_dict(dada2::DadaOutput &&o) {
 
 }  // namespace
 
+// Views of the UTF-8 data of a sequence of str, without copying. `keep` receives a tuple of the
+// objects, which keeps them (and so the views) alive while the GIL is released.
+static std::vector<std::string_view> str_views(nb::handle seq, nb::tuple &keep, const char *what) {
+  keep = nb::steal<nb::tuple>(PySequence_Tuple(seq.ptr()));
+  if (!keep.is_valid()) throw nb::python_error();
+  const size_t n = keep.size();
+  std::vector<std::string_view> views;
+  views.reserve(n);
+  for (size_t i = 0; i < n; ++i) {
+    PyObject *o = PyTuple_GetItem(keep.ptr(), static_cast<Py_ssize_t>(i));
+    if (!PyUnicode_Check(o)) throw nb::type_error((std::string(what) + " must be a sequence of str.").c_str());
+    Py_ssize_t len = 0;
+    const char *data = PyUnicode_AsUTF8AndSize(o, &len);
+    if (!data) throw nb::python_error();
+    views.emplace_back(data, static_cast<size_t>(len));
+  }
+  return views;
+}
+
 NB_MODULE(_core, m) {
   m.doc() = "Private C++ core of pydada2 (ported from DADA2). Not a public API.";
 
@@ -431,21 +450,9 @@ NB_MODULE(_core, m) {
           [](dada2::TaxonomyModel *self, nb::typed<nb::sequence, nb::str> refs,
              const std::vector<int> &ref_to_genus,
              CArray<int32_t> genusmat, int n_threads) {
-            // Read the reference strings in place (no copy of the ~GB of sequence data): the
-            // tuple keeps the str objects alive while the GIL is released.
-            nb::tuple keep = nb::steal<nb::tuple>(PySequence_Tuple(refs.ptr()));
-            if (!keep.is_valid()) throw nb::python_error();
-            const size_t n = keep.size();
-            std::vector<std::string_view> views;
-            views.reserve(n);
-            for (size_t i = 0; i < n; ++i) {
-              PyObject *o = PyTuple_GetItem(keep.ptr(), static_cast<Py_ssize_t>(i));
-              if (!PyUnicode_Check(o)) throw nb::type_error("refs must be a sequence of str.");
-              Py_ssize_t len = 0;
-              const char *data = PyUnicode_AsUTF8AndSize(o, &len);
-              if (!data) throw nb::python_error();
-              views.emplace_back(data, static_cast<size_t>(len));
-            }
+            // Read the reference strings in place (no copy of the ~GB of sequence data).
+            nb::tuple keep;
+            const std::vector<std::string_view> views = str_views(refs, keep, "refs");
             std::vector<int> gm(genusmat.data(), genusmat.data() + genusmat.size());
             const int ngenus = static_cast<int>(genusmat.shape(0));
             const int nlevel = static_cast<int>(genusmat.shape(1));
@@ -671,12 +678,15 @@ NB_MODULE(_core, m) {
       "n_threads"_a = 1, "De novo bimera flags for a set of uniques (K4).");
   m.def(
       "species_hits",
-      [](const std::vector<std::string> &queries, const std::vector<std::string> &refs, bool try_rc,
-         int n_threads) {
+      [](const std::vector<std::string> &queries, nb::typed<nb::sequence, nb::str> refs,
+         bool try_rc, int n_threads) {
+        // The references (e.g. ~0.5 GB of SILVA) are read in place, not copied per call.
+        nb::tuple keep;
+        const std::vector<std::string_view> views = str_views(refs, keep, "refs");
         std::vector<std::vector<int>> r;
         {
           nb::gil_scoped_release release;
-          r = dada2::species_hits(queries, refs, try_rc, n_threads);
+          r = dada2::species_hits(queries, views, try_rc, n_threads);
         }
         return r;
       },
