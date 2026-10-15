@@ -2,13 +2,23 @@
 
 Usage: uv run python benchmarks/micro/run_py.py [repeats] [outfile]
 
-Stage names and inputs mirror benchmarks/micro/run_r.R. Each stage runs once as warm-up, then
-``repeats`` times; the median wall time is reported.
+Stage names, inputs and the timing method mirror benchmarks/micro/run_r.R:
+
+* every stage runs once as warm-up; stages faster than ``MIN_SAMPLE`` seconds are then timed in
+  loops of k calls (k chosen from the warm-up), and the reported time is the median over
+  ``repeats`` samples of (loop time / k);
+* ``gc.collect()`` runs before every timed sample (outside the timed region), like R's gc();
+* thread counts equal R's: filter_and_trim at 1 and 2 (R parallelises over the 2 files only),
+  the multithreaded R stages at 1 and 4. Stages R cannot run multithreaded are additionally
+  timed at 4 threads for pydada2 only (keys ending in "@4" without an R counterpart);
+* inputs are prepared outside the timed regions.
 """
 
 from __future__ import annotations
 
+import gc
 import json
+import math
 import os
 import platform
 import statistics
@@ -23,17 +33,38 @@ import pydada2 as dada2
 from pydada2.datasets import err_balanced_f, err_balanced_r, example_path
 from pydada2.io import read_fasta
 
+MIN_SAMPLE = 0.2  # seconds
+LOOPS: dict[str, int] = {}
 
-def bench(fn: Callable[[], object], repeats: int) -> float:
+
+def bench(key: str, fn: Callable[[], object], repeats: int) -> float:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
+        gc.collect()
+        t0 = time.perf_counter()
         fn()
+        warm = time.perf_counter() - t0
+        k = int(max(1, min(1000, math.ceil(MIN_SAMPLE / max(warm, 1e-6)))))
         times = []
         for _ in range(repeats):
+            gc.collect()
             t0 = time.perf_counter()
-            fn()
-            times.append(time.perf_counter() - t0)
+            for _ in range(k):
+                fn()
+            times.append((time.perf_counter() - t0) / k)
+    LOOPS[key] = k
     return statistics.median(times)
+
+
+def chimera_table(st):  # type: ignore[no-untyped-def]
+    """st plus chimeras of its 6 most abundant sequences (breakpoint 120), as in run_r.R."""
+    import pandas as pd
+
+    top = list(st.columns[:6])
+    chims = [a[:120] + b[120:] for a in top for b in top if a != b]
+    chims = [c for c in dict.fromkeys(chims) if c not in set(st.columns)]
+    extra = pd.DataFrame({c: [5, 3] for c in chims}, index=st.index)
+    return pd.concat([st, extra], axis=1), len(chims)
 
 
 def main() -> None:
@@ -56,12 +87,16 @@ def main() -> None:
     dd_r = dada2.DADA(err=er).fit(drp_r)
     mergers = dada2.merge_pairs(dd_f, drp_f, dd_r, drp_r)
     st = dada2.make_sequence_table(dict(zip(["sam1", "sam2"], mergers, strict=True)))
+    st_chim, n_chims = chimera_table(st)
     ten = [s for _, s in read_fasta(example_path("ten_16s.100.fa.gz"))]
     qfull = ten[::10]
-    qspec = [s for s in qfull if set(s) <= set("ACGT")]
+    species_ref = example_path("example_species_assignment.fa.gz")
+    qspec = [s[i : i + 250] for _, s in read_fasta(species_ref) for i in range(0, len(s) - 249, 50)]
+    qspec = [s for s in qspec if set(s) <= set("ACGT")]
     f27, r1492rc = "AGRGTTYGATYMTGGCTCAG", dada2.reverse_complement("RGYTACCTTGTTACGACTT")
     train = example_path("example_train_set.fa.gz")
     sam1_seqs = dada2.get_sequences(example_path("sam1F.fastq.gz"))
+    spec_hits = dada2.assign_species(qspec, species_ref)
 
     res: dict[str, object] = {
         "meta": {
@@ -69,62 +104,73 @@ def main() -> None:
             "pydada2": dada2.__version__,
             "repeats": repeats,
             "cores": os.cpu_count(),
+            "min_sample": MIN_SAMPLE,
+            "n_chimeras": n_chims,
+            "n_species_queries": len(qspec),
+            "species_hits": int(spec_hits["Species"].notna().sum()),
         }
     }
-    for nt in (1, 4):
 
-        def k(name: str, nt: int = nt) -> str:
-            return f"{name}@{nt}"
+    def run(key: str, fn: Callable[[], object]) -> None:
+        res[key] = bench(key, fn, repeats)
 
-        res[k("filter_and_trim")] = bench(
+    for nt in (1, 2):
+        run(
+            f"filter_and_trim@{nt}",
             lambda nt=nt: dada2.filter_and_trim(fwd, filt_f, rev, filt_r, **filt_kw, n_jobs=nt),
-            repeats,
         )
-        res[k("learn_errors")] = bench(lambda nt=nt: dada2.learn_errors(filt_f, n_jobs=nt), repeats)
-        res[k("dada")] = bench(lambda nt=nt: dada2.DADA(err=ef, n_jobs=nt).fit(drp_f), repeats)
-        res[k("dada_pool")] = bench(
-            lambda nt=nt: dada2.DADA(err=ef, pool=True, n_jobs=nt).fit(drp_f), repeats
+    for nt in (1, 4):
+        run(f"learn_errors@{nt}", lambda nt=nt: dada2.learn_errors(filt_f, n_jobs=nt))
+        run(f"dada@{nt}", lambda nt=nt: dada2.DADA(err=ef, n_jobs=nt).fit(drp_f))
+        run(f"dada_pool@{nt}", lambda nt=nt: dada2.DADA(err=ef, pool=True, n_jobs=nt).fit(drp_f))
+        run(
+            f"dada_pseudo@{nt}",
+            lambda nt=nt: dada2.DADA(err=ef, pool="pseudo", n_jobs=nt).fit(drp_f),
         )
-        res[k("dada_pseudo")] = bench(
-            lambda nt=nt: dada2.DADA(err=ef, pool="pseudo", n_jobs=nt).fit(drp_f), repeats
+        for method in ("consensus", "pooled", "per-sample"):
+            run(
+                f"remove_bimera_{method.replace('-', '_')}@{nt}",
+                lambda nt=nt, method=method: dada2.remove_bimera_denovo(
+                    st_chim, method=method, n_jobs=nt
+                ),
+            )
+        run(
+            f"assign_taxonomy@{nt}",
+            lambda nt=nt: dada2.assign_taxonomy(qfull, train, random_state=1, n_jobs=nt),
         )
-        res[k("remove_bimera_consensus")] = bench(
-            lambda nt=nt: dada2.remove_bimera_denovo(st, method="consensus", n_jobs=nt), repeats
+        # single-threaded in R: the "@4" rows are pydada2-only
+        run(
+            f"merge_pairs@{nt}",
+            lambda nt=nt: dada2.merge_pairs(dd_f, drp_f, dd_r, drp_r, n_jobs=nt),
         )
-        res[k("remove_bimera_pooled")] = bench(
-            lambda nt=nt: dada2.remove_bimera_denovo(st, method="pooled", n_jobs=nt), repeats
+        run(
+            f"collapse_no_mismatch@{nt}",
+            lambda nt=nt: dada2.collapse_no_mismatch(st_chim, n_jobs=nt),
         )
-        res[k("assign_taxonomy")] = bench(
-            lambda nt=nt: dada2.assign_taxonomy(qfull, train, random_state=1, n_jobs=nt), repeats
+        run(
+            f"assign_species@{nt}",
+            lambda nt=nt: dada2.assign_species(qspec, species_ref, n_jobs=nt),
         )
-    res["derep_fastq@1"] = bench(lambda: dada2.derep_fastq(filt_f), repeats)
-    res["merge_pairs@1"] = bench(lambda: dada2.merge_pairs(dd_f, drp_f, dd_r, drp_r), repeats)
-    res["make_sequence_table@1"] = bench(
+        run(
+            f"remove_primers@{nt}",
+            lambda nt=nt: dada2.remove_primers(
+                example_path("samPBprimers.fastq.gz"), tmp / "p.fq.gz", f27, r1492rc, n_jobs=nt
+            ),
+        )
+        run(
+            f"remove_primers_indels@{nt}",
+            lambda nt=nt: dada2.remove_primers(
+                example_path("samPBprimers.fastq.gz"), tmp / "p2.fq.gz", f27, r1492rc,
+                allow_indels=True, n_jobs=nt,
+            ),
+        )  # fmt: skip
+        run(f"seq_complexity@{nt}", lambda nt=nt: dada2.seq_complexity(sam1_seqs, n_jobs=nt))
+    run("derep_fastq@1", lambda: dada2.derep_fastq(filt_f))
+    run(
+        "make_sequence_table@1",
         lambda: dada2.make_sequence_table(dict(zip(["sam1", "sam2"], mergers, strict=True))),
-        repeats,
     )
-    res["collapse_no_mismatch@1"] = bench(lambda: dada2.collapse_no_mismatch(st), repeats)
-    res["assign_species@1"] = bench(
-        lambda: dada2.assign_species(qspec, example_path("example_species_assignment.fa.gz")),
-        repeats,
-    )
-    res["remove_primers@1"] = bench(
-        lambda: dada2.remove_primers(
-            example_path("samPBprimers.fastq.gz"), tmp / "p.fq.gz", f27, r1492rc
-        ),
-        repeats,
-    )
-    res["remove_primers_indels@1"] = bench(
-        lambda: dada2.remove_primers(
-            example_path("samPBprimers.fastq.gz"),
-            tmp / "p2.fq.gz",
-            f27,
-            r1492rc,
-            allow_indels=True,
-        ),
-        repeats,
-    )
-    res["seq_complexity@1"] = bench(lambda: dada2.seq_complexity(sam1_seqs), repeats)
+    res["meta"]["loops"] = LOOPS  # type: ignore[index]
     out.write_text(json.dumps(res, indent=2))
     print(f"wrote {out}")
 

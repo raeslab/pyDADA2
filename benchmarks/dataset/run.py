@@ -7,8 +7,11 @@ Usage: uv run python benchmarks/dataset/run.py [--tool R|py] [--fastq-dir NAME] 
 Each run is a fresh process writing <results>/<tool>_t<threads>_r<rep>/. ``--fastq-dir`` names
 the FASTQ sub-directory of benchmarks/dataset/data (e.g. Stability, see download.sh).
 Runs are interleaved (R, Python, R, Python, ...) so slow drifts of the machine affect both
-tools alike. Peak RSS is the ``ru_maxrss`` reported by ``wait4`` for the run's process tree
-(which includes forked workers, e.g. R's ``mclapply`` in ``filterAndTrim``).
+tools alike. Peak RSS is the ``ru_maxrss`` reported by ``wait4``: the peak resident set of the
+*largest single process* in the run's process tree (the pipeline itself or one of its waited-for
+children, e.g. a forked ``mclapply`` worker of R's ``filterAndTrim``), not the sum over
+concurrently running processes. Threads share their process's memory, so for pydada2 (threads
+only) it is the whole footprint; for R runs with forked workers the total can be higher.
 """
 
 from __future__ import annotations
