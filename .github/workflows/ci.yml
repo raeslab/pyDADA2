@@ -5,19 +5,25 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  workflow_dispatch:  # manual run, also builds and tests the wheels
 
 permissions:
   contents: read
 
+env:
+  UV_VERSION: "0.12.8"  # same as the dev container (Dockerfile)
+
+# Actions are pinned to commit SHAs (tag in the trailing comment).
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
+          version: ${{ env.UV_VERSION }}
           python-version: "3.13"
-      - run: uv sync --all-groups
+      - run: uv sync --all-groups --locked
       - run: uv run ruff format --check .
       - run: uv run ruff check .
       - run: uv run mypy src
@@ -27,47 +33,99 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, macos-13, windows-latest]
+        # ubuntu x86_64, macOS arm64 (macos-latest), macOS x86_64 (macos-15-intel), Windows x64
+        os: [ubuntu-latest, macos-latest, macos-15-intel, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
+          version: ${{ env.UV_VERSION }}
           python-version: ${{ matrix.python-version }}
-      - run: uv sync --all-groups
-      - run: uv run pytest -m "not slow" -n auto
+      - run: uv sync --all-groups --locked
+      # The editable install rebuilds the extension on import; build it once before xdist
+      # starts its workers.
+      - run: uv run python -c "import pydada2._core"
+      # Unit + parity + doctests, with the coverage gate (it applies to the full run only).
+      - run: uv run pytest -m "not slow" -n auto --cov-fail-under=90
       - if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
-        run: uv run pytest -m slow
+        run: uv run pytest -m slow --no-cov
 
-  wheels:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [lint, test]
-    strategy:
-      matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-13, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pypa/cibuildwheel@v2.23
-        env:
-          CIBW_BUILD: "cp311-* cp312-* cp313-*"
-          CIBW_SKIP: "*-musllinux_* *-win32 *_i686"
-          CIBW_TEST_REQUIRES: "pytest hypothesis scikit-learn"
-          CIBW_TEST_COMMAND: "python -c \"import pydada2, pydada2._core\""
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wheels-${{ matrix.os }}
-          path: wheelhouse/*.whl
-
-  sdist:
-    if: startsWith(github.ref, 'refs/tags/v')
+  cpp-tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - run: uv build --sdist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.13"
+      - run: uv venv && uv pip install "nanobind>=2.4"
+      - run: >-
+          cmake -S . -B build/cpp-tests -DCMAKE_BUILD_TYPE=Release -DDADA2_BUILD_CPP_TESTS=ON
+          -DPython_EXECUTABLE=.venv/bin/python
+          -Dnanobind_DIR="$(.venv/bin/python -m nanobind --cmake_dir)"
+      - run: cmake --build build/cpp-tests --target dada2_cpp_tests -j 4
+      - run: ctest --test-dir build/cpp-tests --output-on-failure
+
+  sdist:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.13"
+      # [tool.uv] no-build-isolation-package needs the build backend in the project env.
+      - run: uv sync --all-groups --locked
+      - run: uv build --sdist --no-build-isolation --python .venv/bin/python
+      # The sdist must build and pass the test suite on its own (isolated build, fresh venv).
+      - name: Install the sdist outside the repository and run the tests
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sdist="$(ls "$PWD"/dist/*.tar.gz)"
+          cp -r tests pyproject.toml "$RUNNER_TEMP/"
+          cd "$RUNNER_TEMP"
+          uv venv sdist-venv
+          uv pip install --python sdist-venv "$sdist" pytest hypothesis scikit-learn matplotlib
+          sdist-venv/bin/python -m pytest tests -m "not slow" -p no:cacheprovider -o addopts="" \
+            --import-mode=importlib -ra
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: sdist
           path: dist/*.tar.gz
+
+  wheels:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: [lint, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: pypa/cibuildwheel@e090b81e30c4d855ea63bf4b6e59204c09a101ae  # v4.2.1
+        env:
+          # cp312+ share one abi3 wheel (wheel.py-api = "cp312"); cibuildwheel builds it once and
+          # tests it on every listed CPython.
+          CIBW_BUILD: "cp311-* cp312-* cp313-* cp314-*"
+          CIBW_SKIP: "*-musllinux_* *-win32 *_i686"
+          # The full non-slow suite (unit + R parity) runs against each installed wheel, from a
+          # copy of tests/ outside the source tree so the wheel (not src/) is imported.
+          CIBW_TEST_SOURCES: "tests pyproject.toml"
+          CIBW_TEST_REQUIRES: "pytest hypothesis scikit-learn matplotlib"
+          CIBW_TEST_COMMAND: >-
+            python -m pytest tests -m "not slow" -p no:cacheprovider -o addopts=""
+            --import-mode=importlib -ra
+          # scikit-misc publishes no linux-aarch64 wheels: building it needs a Fortran compiler.
+          CIBW_BEFORE_TEST_LINUX: >-
+            if [ "$(uname -m)" = "aarch64" ]; then
+            (dnf install -y gcc-gfortran || yum install -y gcc-gfortran); fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl

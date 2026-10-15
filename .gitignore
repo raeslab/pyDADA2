@@ -57,6 +57,8 @@ dist/
 _skbuild/
 wheelhouse/
 .pytest_cache/
+.hypothesis/
+.benchmarks/
 .ruff_cache/
 .mypy_cache/
 .coverage

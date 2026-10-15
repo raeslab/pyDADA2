@@ -7,7 +7,12 @@ import pytest
 from pydada2.datasets import example_path
 from pydada2.taxonomy import TaxonomyClassifier, add_species, assign_species
 
-from rparity import load
+from rparity import (
+    assert_bootstrap_agreement,
+    load,
+    r_taxonomy,
+    taxonomy_disagreements,
+)
 
 pytestmark = pytest.mark.parity
 
@@ -20,10 +25,7 @@ def tx():
     return load("taxonomy")
 
 
-def _r_tax(obj):
-    # Build the object array directly: pandas 3 would turn None into NaN in string columns.
-    cols = sorted(obj, key=lambda c: int(c[1:]))
-    return np.array([obj[c] for c in cols], dtype=object).T
+_r_tax = r_taxonomy
 
 
 def _py(df):
@@ -55,24 +57,13 @@ def test_try_rc_top_hits(tx):
     np.testing.assert_array_equal(got, _r_tax(tx["tryrc"]["tax"]))
 
 
-def _binomial_bound(p_a, p_b=None):
-    """3 sigma of the difference of two independent 100-draw bootstrap estimates (+2 for ties),
-    using the pooled estimate of the underlying proportion."""
-    pooled = p_a if p_b is None else (np.asarray(p_a) + np.asarray(p_b)) / 2
-    p = np.clip(np.asarray(pooled) / 100.0, 0.0, 1.0)
-    return 3 * np.sqrt(2 * 100 * p * (1 - p)) + 2
-
-
 @pytest.mark.parametrize("which,qkey", [("boot0", "queries"), ("boot0_full", "queries_full")])
 def test_bootstrap_statistical(tx, which, qkey):
     # Bootstrap values differ from R only by RNG noise (DEVIATIONS.md #2): every entry within
     # 3 sigma of binomial noise, median |difference| <= 10 (spec §8.3).
     clf = TaxonomyClassifier(min_boot=0, random_state=100).fit(TRAIN)
     boot = clf.predict_bootstrap(tx[qkey]).to_numpy()
-    exp = np.array(tx[which]["boot"])
-    diff = np.abs(boot - exp)
-    assert np.median(diff) <= 10
-    assert (diff <= _binomial_bound(boot, exp)).all()
+    assert_bootstrap_agreement(boot, np.array(tx[which]["boot"]))
 
 
 @pytest.mark.parametrize(
@@ -85,13 +76,29 @@ def test_min_boot_50_agreement(tx, which, qkey, bkey):
     clf = TaxonomyClassifier(random_state=100).fit(TRAIN)
     got = _py(clf.predict(tx[qkey]))
     exp = _r_tax(tx[which])
-    r_boot = np.array(tx[bkey]["boot"])
-    for i in range(len(exp)):
-        for j in range(exp.shape[1]):
-            if got[i, j] == exp[i, j] or (got[i, j] is None and exp[i, j] is None):
-                continue
-            assert abs(r_boot[i, j] - 50) <= _binomial_bound(np.array(50.0)), (i, j)
-            break  # deeper levels follow from this one
+    taxonomy_disagreements(got, exp, np.array(tx[bkey]["boot"]))
+
+
+def test_deviation_2_magnitude(tx):
+    # Pins DEVIATIONS.md #2 tighter than the §8.3 criterion, so it cannot grow silently. Over the
+    # 109 queries: bootstrap |delta| median 0, max 15; 8 sequences differ at min_boot=50 (7-9
+    # depending on the R run: R's own tie-breaking is not reproducible), all with R bootstrap
+    # 42-55. The bounds leave room for that R-side variation only.
+    deltas, disagreements = [], []
+    for which, qkey, bkey in [
+        ("minboot50", "queries", "boot0"),
+        ("minboot50_full", "queries_full", "boot0_full"),
+    ]:
+        clf = TaxonomyClassifier(random_state=100).fit(TRAIN)
+        tax, boot = clf.predict(tx[qkey], return_bootstrap=True)
+        r_boot = np.array(tx[bkey]["boot"])
+        deltas.append(np.abs(boot.to_numpy() - r_boot).ravel())
+        disagreements += taxonomy_disagreements(_py(tax), _r_tax(tx[which]), r_boot)
+    d = np.concatenate(deltas)
+    assert np.median(d) == 0
+    assert d.max() <= 20
+    assert len(disagreements) <= 12
+    assert all(abs(b - 50) <= 10 for _, _, b in disagreements), disagreements
 
 
 def test_random_state_and_threads(tx):

@@ -30,16 +30,14 @@ else()
                          -Wno-unused-variable -Wno-unused-but-set-variable)
 endif()
 
-# Boost.Math (header-only) for ppois_upper (stats.cpp): system headers if available, otherwise
-# the standalone Boost.Math release pinned below (needs network once at configure time).
-if(NOT DADA2_FETCH_BOOST)
-  find_path(DADA2_BOOST_MATH_INCLUDE boost/math/special_functions/gamma.hpp)
-endif()
-if(DADA2_BOOST_MATH_INCLUDE AND NOT DADA2_FETCH_BOOST)
-  message(STATUS "pydada2: using Boost.Math headers from ${DADA2_BOOST_MATH_INCLUDE}")
-  target_include_directories(dada2_core SYSTEM PRIVATE "${DADA2_BOOST_MATH_INCLUDE}")
-else()
-  message(STATUS "pydada2: fetching standalone Boost.Math")
+# Boost.Math (header-only) for ppois_upper (stats.cpp).
+#   DADA2_FETCH_BOOST=ON (default): the standalone Boost.Math release pinned below, identical on
+#     every platform (downloaded once at configure time; for offline builds pre-download it and
+#     pass -DFETCHCONTENT_SOURCE_DIR_BOOST_MATH=<unpacked dir>).
+#   DADA2_FETCH_BOOST=OFF: system/user headers only (never downloads). Point CMake at them with
+#     -DDADA2_BOOST_MATH_INCLUDE=<dir containing boost/math> if they are not on the include path.
+if(DADA2_FETCH_BOOST)
+  message(STATUS "pydada2: using the pinned standalone Boost.Math 1.86")
   include(FetchContent)
   FetchContent_Declare(boost_math
     URL https://github.com/boostorg/math/archive/refs/tags/boost-1.86.0.tar.gz
@@ -48,6 +46,20 @@ else()
   FetchContent_MakeAvailable(boost_math)
   target_include_directories(dada2_core SYSTEM PRIVATE "${boost_math_SOURCE_DIR}/include")
   target_compile_definitions(dada2_core PRIVATE BOOST_MATH_STANDALONE)
+else()
+  find_path(DADA2_BOOST_MATH_INCLUDE boost/math/special_functions/gamma.hpp)
+  if(NOT DADA2_BOOST_MATH_INCLUDE)
+    message(FATAL_ERROR
+      "pydada2: DADA2_FETCH_BOOST=OFF but the Boost.Math headers "
+      "(boost/math/special_functions/gamma.hpp) were not found. Install Boost (>= 1.86 recommended; "
+      "older versions may change ppois_upper in the last bits), pass "
+      "-DDADA2_BOOST_MATH_INCLUDE=<include dir>, or build with DADA2_FETCH_BOOST=ON.")
+  endif()
+  message(STATUS "pydada2: using Boost.Math headers from ${DADA2_BOOST_MATH_INCLUDE}")
+  target_include_directories(dada2_core SYSTEM PRIVATE "${DADA2_BOOST_MATH_INCLUDE}")
+  if(NOT EXISTS "${DADA2_BOOST_MATH_INCLUDE}/boost/config.hpp")  # standalone Boost.Math checkout
+    target_compile_definitions(dada2_core PRIVATE BOOST_MATH_STANDALONE)
+  endif()
 endif()
 
 find_package(Threads REQUIRED)
@@ -65,11 +77,16 @@ target_link_libraries(_core PRIVATE dada2_core)
 install(TARGETS _core LIBRARY DESTINATION pydada2)
 
 # ----------------------------------------------------------- C++ unit tests ---
+# cmake -DDADA2_BUILD_CPP_TESTS=ON ... && cmake --build <dir> && ctest --test-dir <dir>
 if(DADA2_BUILD_CPP_TESTS)
   include(FetchContent)
-  FetchContent_Declare(Catch2 GIT_REPOSITORY https://github.com/catchorg/Catch2.git GIT_TAG v3.7.1)
+  FetchContent_Declare(Catch2
+    URL https://github.com/catchorg/Catch2/archive/refs/tags/v3.7.1.tar.gz
+    URL_HASH SHA256=c991b247a1a0d7bb9c39aa35faf0fe9e19764213f28ffba3109388e62ee0269c)
   FetchContent_MakeAvailable(Catch2)
   file(GLOB DADA2_CPP_TESTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cpp/tests/*.cpp")
   add_executable(dada2_cpp_tests ${DADA2_CPP_TESTS})
   target_link_libraries(dada2_cpp_tests PRIVATE dada2_core Catch2::Catch2WithMain)
+  enable_testing()
+  add_test(NAME dada2_cpp_tests COMMAND dada2_cpp_tests)
 endif()

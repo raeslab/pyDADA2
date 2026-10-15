@@ -43,6 +43,16 @@ def test_derep_filtered_and_chunked(tmp_path):
         np.testing.assert_allclose(drp.quals, quals, rtol=1e-12, equal_nan=True)
 
 
+def test_derep_filtered_both_samples(filtered):
+    for i, case in enumerate(("filtF_sam1", "filtF_sam2")):
+        drp = dada2.derep_fastq(filtered["F1"][i])
+        seqs, abund, quals, m = derep_fixture(case)
+        assert drp.sequences == seqs, case
+        np.testing.assert_array_equal(drp.uniques.to_numpy(), abund)
+        np.testing.assert_array_equal(drp.map, m)
+        np.testing.assert_allclose(drp.quals, quals, rtol=1e-12, equal_nan=True)
+
+
 def test_derep_list_and_repr():
     drps = dada2.derep_fastq([EXTDATA / "sam1F.fastq.gz", EXTDATA / "sam2F.fastq.gz"])
     assert len(drps) == 2 and drps[0].n_reads == 1500
@@ -61,6 +71,8 @@ def test_seq_complexity_parity():
 
 def test_is_phix_parity():
     d = load("sequences")["is_phix"]
+    frag = load("sequences")["phix_frag"]
+    assert d["seqs"][-len(frag) :] == frag  # 50 sam1F reads + the phiX fragments
     assert dada2.is_phix(d["seqs"]).tolist() == d["default"]
     assert dada2.is_phix(d["seqs"], word_size=12, min_matches=1).tolist() == d["ws12_mm1"]
 

@@ -7,7 +7,7 @@
 # (installed by scripts/devcontainer-post-create.sh) or a Bioconductor install.
 # Output: tests/reference/data/*.json[.gz] + inputs/ + err/*.npy + MANIFEST.json.
 #
-# Conventions (mirrored by tests/reference/fixtures.py):
+# Conventions (mirrored by tests/rparity.py):
 #   * JSON written with digits=I(17) (exact double round-trip), auto_unbox=FALSE
 #     (every R vector is a JSON array, scalars included), NA -> null,
 #     matrices row-major, data.frames as {column: [values]}.
@@ -190,11 +190,14 @@ run_filter <- function(.name, .fwd, .rev = NULL, ...) {
   dir.create(odir)
   filt <- file.path(odir, sub("\\.gz$", "", basename(.fwd)))
   filt.rev <- if (is.null(.rev)) NULL else file.path(odir, paste0("R_", sub("\\.gz$", "", basename(.rev))))
-  out <- suppressMessages(filterAndTrim(.fwd, filt, rev = .rev, filt.rev = filt.rev,
-                                        compress = FALSE, multithread = FALSE, ...))
+  warns <- character(0)  # R's warnings are part of the fixture (the tests compare them)
+  out <- withCallingHandlers(
+    suppressMessages(filterAndTrim(.fwd, filt, rev = .rev, filt.rev = filt.rev,
+                                   compress = FALSE, multithread = FALSE, ...)),
+    warning = function(w) { warns <<- c(warns, conditionMessage(w)); invokeRestart("muffleWarning") })
   res <- list(
     inputs = basename(.fwd), inputs_rev = if (is.null(.rev)) NULL else basename(.rev),
-    params = list(...),
+    params = list(...), warnings = warns,
     reads_in = unname(out[, 1]), reads_out = unname(out[, 2]),
     outputs = lapply(filt, fq_digest),
     outputs_rev = if (is.null(.rev)) NULL else lapply(filt.rev, fq_digest)
@@ -657,13 +660,239 @@ wj(list(uniques_to_fasta = readLines(ufa),
 
 # ===================================================== e2e (vignette) ===
 log_msg("e2e")
+# The vignette pipeline: learned error rates (learnErrors above), dada, mergePairs,
+# makeSequenceTable, consensus chimera removal. Taxonomy is not stored here: R's assignTaxonomy
+# is not reproducible (std::random_device tie-breaks, also inside the bootstrap), which would make
+# this file change on every run. Every e2e ASV is among taxonomy.json's `queries`, so the e2e test
+# compares against those R results (spec §8.3 criterion).
 getN <- function(x) sum(getUniques(x))
-track <- cbind(p1$res$reads_in, p1$res$reads_out, sapply(ddF, getN), sapply(ddR, getN),
-               sapply(mergers, getN), rowSums(seqtab.nochim))
+ddF_le <- run_dada(dF_P, leF$err_out)
+ddR_le <- run_dada(dR, leR$err_out)
+mergers_le <- suppressMessages(mergePairs(ddF_le, dF_P, ddR_le, dR))
+seqtab_le <- makeSequenceTable(mergers_le)
+nochim_le <- removeBimeraDenovo(seqtab_le, method = "consensus", multithread = FALSE)
+stopifnot(all(colnames(nochim_le) %in% colnames(seqtab.nochim)))
+track <- cbind(p1$res$reads_in, p1$res$reads_out, sapply(ddF_le, getN), sapply(ddR_le, getN),
+               sapply(mergers_le, getN), rowSums(nochim_le))
 colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
 rownames(track) <- c("sam1", "sam2")
-wj(list(track = mat_list(track), seqtab_nochim = mat_list(seqtab.nochim),
-        taxa = df_list(as.data.frame(unname(taxa50)))), "e2e")
+wj(list(track = mat_list(track), seqtab_nochim = mat_list(nochim_le)), "e2e")
+
+# ============================================ coverage: filter inputs (T1) ===
+# Synthetic inputs on which maxN, maxLen, minLen, rm.phix and rm.lowcomplex actually remove
+# reads (the example FASTQs contain no N, no phiX and no low-complexity reads). Each section
+# checks that every filter it claims to cover changes the output.
+log_msg("coverage: filter inputs")
+set.seed(2024)
+write_fq_text <- function(ids, seqs, quals, path) {  # plain-text writer: keeps lowercase letters
+  con <- gzfile(path, "w")
+  writeLines(paste0("@", ids, "\n", seqs, "\n+\n", quals), con)
+  close(con)
+}
+sub_at <- function(s, pos, ch) { for (k in seq_along(pos)) substr(s, pos[k], pos[k]) <- ch[k]; s }
+IUPAC_AMB <- c("R", "Y", "S", "W", "K", "M", "B", "D", "H", "V")
+make_cov_mates <- function(fq, phix, sets) {
+  ids <- as.character(id(fq))
+  sq <- as.character(sread(fq))
+  ql <- as.character(quality(quality(fq)))
+  for (i in sets$n) {  # 1-3 N's (maxN), original qualities
+    k <- (i %% 3) + 1
+    sq[i] <- sub_at(sq[i], sample(30:220, k), rep("N", k))
+  }
+  for (i in sets$iupac) {  # 1-2 IUPAC ambiguity codes (counted as N by ShortRead's nFilter)
+    k <- (i %% 2) + 1
+    sq[i] <- sub_at(sq[i], sample(30:220, k), sample(IUPAC_AMB, k, replace = TRUE))
+  }
+  for (i in sets$lower) {  # a lowercase stretch (readers upper-case)
+    st <- sample(1:150, 1)
+    substr(sq[i], st, st + 59) <- tolower(substr(sq[i], st, st + 59))
+  }
+  for (i in sets$phix) {  # phiX fragments (forward and reverse-complement)
+    st <- sample(1:(nchar(phix) - 300), 1)
+    frag <- substr(phix, st, st + nchar(sq[i]) - 1)
+    sq[i] <- if (i %% 2 == 0) frag else rc(frag)
+  }
+  lowc <- function(i, n) {
+    switch((i %% 6) + 1,
+           substr(strrep("AC", n), 1, n),
+           substr(strrep("ACGT", n), 1, n),
+           substr(strrep(paste(sample(c("A", "C", "G", "T"), 5, TRUE), collapse = ""), n), 1, n),
+           paste0(strrep("A", n %/% 2), substr(sq[i], 1, n - n %/% 2)),
+           paste0(substr(sq[i], 1, n %/% 3), strrep("GT", n)) |> substr(1, n),
+           substr(strrep("AAAAC", n), 1, n))
+  }
+  for (i in sets$lowc) sq[i] <- lowc(i, nchar(sq[i]))
+  for (i in sets$short) {  # shorter reads (minLen / truncLen / maxLen)
+    w <- sample(150:249, 1)
+    sq[i] <- substr(sq[i], 1, w); ql[i] <- substr(ql[i], 1, w)
+  }
+  for (i in sets$long) {  # longer reads (maxLen): append part of another read
+    j <- sample(setdiff(seq_along(sq), i), 1); w <- sample(10:50, 1)
+    sq[i] <- paste0(sq[i], substr(sq[j], 1, w)); ql[i] <- paste0(ql[i], substr(ql[j], 1, w))
+  }
+  list(ids = ids, sq = sq, ql = ql)
+}
+phix_seq <- getSequences(ext("phix_genome.fa"))[[1]]
+cov_idx <- 301:600
+mF <- make_cov_mates(fq1F[cov_idx], phix_seq,
+                     list(n = 61:100, iupac = 101:120, lower = 121:140, phix = 141:160,
+                          lowc = 161:180, short = 181:210, long = 211:240))
+mR <- make_cov_mates(fq1R[cov_idx], phix_seq,
+                     list(n = 81:115, iupac = 116:125, lower = 41:60, phix = 150:170,
+                          lowc = 175:195, short = 200:230, long = 260:280))
+perm <- sample(length(cov_idx))  # interleave the read classes (matters for chunking)
+write_fq_text(mF$ids[perm], mF$sq[perm], mF$ql[perm], inp("cov_F.fastq.gz"))
+write_fq_text(mR$ids[perm], mR$sq[perm], mR$ql[perm], inp("cov_R.fastq.gz"))
+
+# run_filter() plus a check that each listed argument changes the result when neutralised.
+NEUTRAL <- list(maxN = Inf, maxLen = Inf, minLen = 0, rm.phix = FALSE, rm.lowcomplex = 0,
+                minQ = 0, truncLen = 0, maxEE = Inf)
+run_cov <- function(.name, .fwd, .rev = NULL, .bites, ...) {
+  r <- run_filter(.name, .fwd, .rev, ...)
+  args <- list(...)
+  for (b in .bites) {
+    a2 <- args
+    a2[[b]] <- if (is.null(.rev)) NEUTRAL[[b]] else rep(NEUTRAL[[b]], 2)
+    r2 <- do.call(run_filter, c(list(paste0(.name, "_no_", gsub(".", "", b, fixed = TRUE)), .fwd, .rev), a2))
+    if (identical(r$res$reads_out, r2$res$reads_out) &&
+        identical(lapply(r$res$outputs, `[[`, "md5"), lapply(r2$res$outputs, `[[`, "md5")))
+      stop("filter coverage: ", b, " does not change the output of ", .name)
+  }
+  r$res$bites <- .bites
+  r$res
+}
+covF <- inp("cov_F.fastq.gz"); covR <- inp("cov_R.fastq.gz")
+fcov <- list()
+fcov$S1 <- run_cov("S1", covF, .bites = c("maxN", "rm.phix"), truncQ = 2, maxN = 0, rm.phix = TRUE)
+fcov$S2 <- run_cov("S2", covF, .bites = c("maxN", "rm.lowcomplex"), truncQ = 2, maxN = 2,
+                   rm.phix = FALSE, rm.lowcomplex = 8)
+fcov$S3 <- run_cov("S3", covF, .bites = c("maxLen", "minLen", "maxN"), truncQ = 0, maxN = 2,
+                   maxLen = 255, minLen = 200, rm.phix = FALSE)
+fcov$S4 <- run_cov("S4", covF, .bites = c("truncLen", "maxN", "rm.lowcomplex", "rm.phix"),
+                   truncLen = 200, truncQ = 2, maxN = 1, rm.lowcomplex = 12, rm.phix = TRUE)
+fcov$S5 <- run_cov("S5", covF, .bites = c("maxN", "rm.lowcomplex", "minQ", "rm.phix"),
+                   trimLeft = 5, trimRight = 10, maxN = 0, rm.lowcomplex = 4, minQ = 15,
+                   rm.phix = TRUE)
+fcov$S6_chunked <- run_cov("S6", covF, .bites = c("maxN", "rm.phix"), truncQ = 2, maxN = 0,
+                           rm.phix = TRUE, n = 37)
+fcov$P1 <- run_cov("P1c", covF, covR, .bites = c("maxN", "rm.phix", "rm.lowcomplex", "maxLen"),
+                   maxN = c(0, 1), rm.phix = c(TRUE, TRUE), rm.lowcomplex = c(8, 0),
+                   maxLen = c(255, 270), truncQ = 2, minLen = 50)
+fcov$P2_chunked <- run_cov("P2c", covF, covR, .bites = c("maxN", "rm.phix", "rm.lowcomplex", "truncLen"),
+                           maxN = c(2, 0), rm.phix = c(FALSE, TRUE), rm.lowcomplex = c(0, 10),
+                           truncLen = c(200, 150), n = 50)
+fcov$PB2 <- run_cov("PB2", ext("samPB.fastq.gz"), .bites = c("minLen", "maxLen"), minQ = 3,
+                    minLen = 1470, maxLen = 1500, maxN = 0, rm.phix = FALSE, maxEE = 2)
+wj(fcov, "filter_coverage")
+
+# ===================================== coverage: derep letter order (T1) ===
+# Reads that differ only by IUPAC codes / N / lowercase, with abundance ties, so the tie order
+# (Biostrings letter codes, chunk-dependent) is pinned.
+log_msg("coverage: derep IUPAC order")
+set.seed(2025)
+base_sq <- substr(as.character(sread(fq1F[1])), 1, 60)
+base_ql <- substr(as.character(quality(quality(fq1F[1]))), 1, 60)
+letters_all <- c("A", "C", "G", "T", "N", IUPAC_AMB)
+d_sq <- c(sapply(letters_all, function(L) sub_at(base_sq, 30, L)),                 # abundance 1
+          sapply(c("N", "A", "Y", "K"), function(L) sub_at(base_sq, 30, L)),       # -> abundance 2
+          sapply(c("R", "N", "C"), function(L) sub_at(base_sq, c(30, 45), c(L, "N"))),
+          sapply(c("n", "y"), function(L) tolower(sub_at(base_sq, 30, toupper(L)))), # lowercase copies
+          substr(base_sq, 1, 50), substr(sub_at(base_sq, 30, "N"), 1, 55))           # prefixes
+d_ql <- substr(rep(base_ql, length(d_sq)), 1, nchar(d_sq))
+d_ord <- sample(length(d_sq))
+d_ids <- sprintf("iupac%02d", seq_along(d_sq))
+write_fq_text(d_ids, unname(d_sq[d_ord]), d_ql[d_ord], inp("derep_iupac.fastq.gz"))
+wj(list(default = derep_list(derepFastq(inp("derep_iupac.fastq.gz"))),
+        n5 = derep_list(derepFastq(inp("derep_iupac.fastq.gz"), n = 5)),
+        cov_F = derep_list(derepFastq(covF)),
+        cov_F_n37 = derep_list(derepFastq(covF, n = 37))), "derep_coverage")
+
+# ======================================== coverage: chimera methods (T4) ===
+# A 5-sample table on which the removal methods and the consensus options disagree, a DADA
+# result with real (injected) chimeras, and shifted/contained sequences for isShiftDenovo.
+log_msg("coverage: chimeras")
+tp <- colnames(seqtab)[1:6]
+mkchim <- function(a, b, brk) paste0(substr(a, 1, brk), substr(b, brk + 1, nchar(b)))
+# (tp1/tp3 and tp2/tp4 differ only at 1-2 positions; breakpoints are chosen so that each
+# chimera differs from both parents on both sides.)
+cA <- mkchim(tp[1], tp[2], 120)  # parents everywhere: flagged by every method
+cB <- mkchim(tp[2], tp[3], 120)  # parent tp3 in 3/5 samples: minSampleFraction/ignoreNNegatives
+cC <- mkchim(tp[4], tp[1], 120)  # parent tp4 in 4/5 samples: ignoreNNegatives
+cD <- mkchim(tp[5], tp[6], 140)  # abundant; parents only in sample 5: per-sample only
+cE <- mut(cA, 200, ifelse(substr(cA, 200, 200) == "A", "C", "A"))  # one-off: allowOneOff
+ch_seqs <- c(tp, cA, cB, cC, cD, cE)
+stopifnot(!anyDuplicated(ch_seqs))
+cm <- matrix(c(500L, 400L, 300L, 200L,   0L,   0L, 20L, 15L, 10L, 300L, 8L,
+               450L, 350L, 250L, 150L,   0L,   0L, 18L, 12L,  9L, 280L, 0L,
+               400L, 300L, 200L, 100L,   0L,   0L, 15L, 10L,  8L, 250L, 0L,
+               350L, 250L,   0L,  90L,   0L,   0L, 12L, 10L,  7L, 260L, 0L,
+               300L, 200L,   0L,   0L, 400L, 350L, 10L,  8L,  6L,  10L, 0L),
+             nrow = 5, byrow = TRUE, dimnames = list(paste0("s", 1:5), ch_seqs))
+table_opts <- list(
+  default = list(),
+  msf05 = list(minSampleFraction = 0.5),
+  ignore0 = list(ignoreNNegatives = 0),
+  ignore2 = list(ignoreNNegatives = 2),
+  oneoff = list(allowOneOff = TRUE),
+  fold3 = list(minFoldParentOverAbundance = 3),
+  minab250 = list(minParentAbundance = 250),
+  shift2 = list(maxShift = 2)
+)
+tab_calls <- lapply(table_opts, function(o) unname(do.call(isBimeraDenovoTable, c(list(cm), o))))
+pooled_opts <- list(default = list(), oneoff = list(allowOneOff = TRUE),
+                    fold1 = list(minFoldParentOverAbundance = 1), minab500 = list(minParentAbundance = 500))
+cm_tot <- setNames(as.integer(colSums(cm)), colnames(cm))
+pooled_calls <- lapply(pooled_opts, function(o) unname(do.call(isBimeraDenovo, c(list(cm_tot), o))))
+rm_cons <- removeBimeraDenovo(cm, method = "consensus")
+rm_pool <- removeBimeraDenovo(cm, method = "pooled")
+rm_ps <- removeBimeraDenovo(cm, method = "per-sample")
+rm_ps_oneoff <- removeBimeraDenovo(cm, method = "per-sample", allowOneOff = TRUE)
+# The methods/options must disagree on this table (otherwise the fixture pins nothing).
+stopifnot(!identical(colnames(rm_cons), colnames(rm_pool)),
+          !identical(rm_cons, rm_ps[, colnames(rm_ps) %in% colnames(rm_cons), drop = FALSE]) ||
+            !identical(colnames(rm_cons), colnames(rm_ps)),
+          !identical(tab_calls$default, tab_calls$msf05), !identical(tab_calls$default, tab_calls$ignore0),
+          !identical(tab_calls$default, tab_calls$ignore2), !identical(tab_calls$default, tab_calls$oneoff),
+          !identical(pooled_calls$default, pooled_calls$oneoff))
+bt <- dada2:::C_table_bimera2(cm, colnames(cm), 1.5, 2, FALSE, 4, 5L, -4L, -8L, 16)
+
+# DADA on reads with injected chimeras: isBimeraDenovo on a dada object with positives.
+set.seed(2026)
+fqF1 <- readFastq(filtF[[1]])
+asv1 <- getSequences(ddF$sam1)
+chim_reads <- c(rep(mkchim(asv1[1], asv1[2], 110), 40), rep(mkchim(asv1[3], asv1[1], 150), 25))
+donor <- sample(length(fqF1), length(chim_reads))
+write_fq_text(c(as.character(id(fqF1)), sprintf("chimera%03d", seq_along(chim_reads))),
+              c(as.character(sread(fqF1)), chim_reads),
+              c(as.character(quality(quality(fqF1))), as.character(quality(quality(fqF1[donor])))),
+              inp("chimeric_sam1F.fastq.gz"))
+dd_chim <- suppressMessages(dada(derepFastq(inp("chimeric_sam1F.fastq.gz")), err = errBalancedF,
+                                 multithread = FALSE, verbose = FALSE))
+bim_dada <- unname(isBimeraDenovo(dd_chim))
+stopifnot(any(bim_dada))
+
+# isShiftDenovo: shifted copies with long / short overlaps and contained subsequences.
+sh_unq <- getUniques(ddF$sam1)[1:6]
+s1 <- names(sh_unq)[1]; s2 <- names(sh_unq)[2]
+flank <- substr(phix_seq, 1001, 1150)  # unrelated sequence
+shifted <- c(paste0(flank, substr(s1, 1, 90)),                    # 90-nt overlap with s1
+             paste0("ACGTA", substr(s1, 1, 235)),                 # 235-nt overlap
+             substr(s2, 21, 220),                                  # contained in s2
+             substr(s1, 1, 230))                                   # prefix of s1
+sh_all <- c(sh_unq, setNames(c(4L, 3L, 3L, 2L), shifted))
+shift_calls <- list(default = unname(isShiftDenovo(sh_all)),
+                    ov100 = unname(isShiftDenovo(sh_all, minOverlap = 100)),
+                    subseqs = unname(isShiftDenovo(sh_all, flagSubseqs = TRUE)))
+stopifnot(!identical(shift_calls$default, shift_calls$ov100))
+
+wj(list(table = mat_list(cm), table_opts = table_opts, table_calls = tab_calls,
+        table_bimera = df_list(bt), pooled_opts = pooled_opts, pooled_calls = pooled_calls,
+        remove_consensus = mat_list(rm_cons), remove_pooled = mat_list(rm_pool),
+        remove_per_sample = mat_list(rm_ps), remove_per_sample_oneoff = mat_list(rm_ps_oneoff),
+        dada_chim = list(denoised = unq_list(dd_chim$denoised), is_bimera = bim_dada,
+                         is_bimera_oneoff = unname(isBimeraDenovo(dd_chim, allowOneOff = TRUE)),
+                         removed = unq_list(removeBimeraDenovo(dd_chim))),
+        shift = list(uniques = unq_list(sh_all), calls = shift_calls)), "chimera_coverage")
 
 # ================================================= numerics (REVIEW.md fixes) ===
 # Self-contained section with its own seeds, so it does not disturb the fixtures above.

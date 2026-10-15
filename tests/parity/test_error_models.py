@@ -3,6 +3,8 @@
 import numpy as np
 import pytest
 
+from pydada2.datasets import err_balanced_f
+from pydada2.denoise import DADA
 from pydada2.error_models import (
     BinnedQualErrorModel,
     LoessErrorModel,
@@ -65,6 +67,17 @@ def test_error_model_on_learned_trans(key, model):
     np.testing.assert_allclose(model(matrix(le["trans"])), matrix(le["err_out"]), rtol=1e-6)
 
 
-def test_get_errors_matrix(em):
-    err = matrix(em["get_errors"])
-    assert np.array_equal(get_errors(err), err)
+def test_get_errors_from_dada(em, dereps):
+    # R: getErrors(d0) and getErrors(d0, detailed=TRUE), d0 <- dada(dF$sam1, err=errBalancedF)
+    dd = DADA(err=err_balanced_f()).fit(dereps["dF"]["sam1"])
+    exp = matrix(em["get_errors"])
+    np.testing.assert_allclose(get_errors(dd), exp, rtol=1e-10)
+    np.testing.assert_allclose(get_errors(dd[0]), exp, rtol=1e-10)
+    det = get_errors(dd[0], detailed=True)
+    np.testing.assert_allclose(
+        det["err_out"], matrix(em["get_errors_detailed"]["err_out"]), rtol=1e-10
+    )
+    np.testing.assert_array_equal(
+        det["trans"], matrix(em["get_errors_detailed"]["trans"], dtype=np.int64)
+    )
+    assert np.array_equal(get_errors(exp), exp)  # a plain matrix passes through

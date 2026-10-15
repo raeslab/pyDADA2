@@ -116,4 +116,17 @@ def test_get_uniques_of_mergers(denoised):
     ddF, ddR, dF, dR = denoised
     m = merge_pairs(ddF, dF, ddR, dR)[0]
     u = dada2.get_uniques(m)
-    assert u.sum() == m["abundance"].sum()
+    exp = m.groupby("sequence", sort=False)["abundance"].sum()
+    assert u.index.tolist() == exp.index.tolist() and u.tolist() == exp.tolist()
+
+
+def test_get_uniques_and_sequences_vs_r(denoised):
+    misc = load("misc")
+    # R: getUniques(seqtab[1, ])
+    row = _table(load("seqtab")["seqtab"]).iloc[0]
+    u = dada2.get_uniques(row)
+    assert u.index.tolist() == misc["get_uniques_seqtab_row"]["sequence"]
+    assert u.tolist() == misc["get_uniques_seqtab_row"]["abundance"]
+    # R: getSequences(ddF$sam1)
+    ddF = denoised[0]
+    assert dada2.get_sequences(ddF[0]) == misc["get_sequences_dada"]
