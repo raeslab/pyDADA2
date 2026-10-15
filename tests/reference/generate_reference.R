@@ -741,8 +741,8 @@ for (case in 1:300) {
   fixed <- !grepl("[^ACGT]", pat)
   res <- list(subject = subj, pattern = pat, max_mismatch = k, fixed = fixed)
   for (ind in c(FALSE, TRUE)) {
-    mm <- matchPattern(pat, DNAString(subj), max.mismatch = k, with.indels = ind, fixed = fixed)
-    res[[if (ind) "indels" else "mismatch"]] <- list(start = start(mm), end = end(mm))
+    hit <- matchPattern(pat, DNAString(subj), max.mismatch = k, with.indels = ind, fixed = fixed)
+    res[[if (ind) "indels" else "mismatch"]] <- list(start = start(hit), end = end(hit))
   }
   mpd[[case]] <- res
 }
