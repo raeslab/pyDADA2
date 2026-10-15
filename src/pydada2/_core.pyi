@@ -175,7 +175,9 @@ def kmer_matches(s1: Sequence[str], s2: Sequence[str], kmer_size: int) -> list[i
 def kdist_matches(s1: Sequence[str], s2: Sequence[str], kmer_size: int) -> list[int]:
     """Shared k-mer counts between s1[i] and s2[i]."""
 
-def match_ref(seqs: Sequence[str], ref: str, word_size: int, non_overlapping: bool) -> list[int]:
+def match_ref(
+    seqs: Sequence[str], ref: str, word_size: int, non_overlapping: bool, n_threads: int = 1
+) -> list[int]:
     """
     Number of word_size-mers of each sequence found in the (circular) reference.
     """
@@ -288,6 +290,7 @@ def is_phix(
     word_size: int = 16,
     min_matches: int = 2,
     non_overlapping: bool = True,
+    n_threads: int = 1,
 ) -> NDArray[numpy.bool_]:
     """
     Whether each sequence matches the phiX genome (or its reverse complement).

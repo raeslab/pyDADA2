@@ -48,7 +48,7 @@ int detect_quality_offset(const std::vector<std::string> &quals);
 
 // isPhiX: word matches against the phiX genome and its reverse complement.
 std::vector<bool> is_phix(const std::vector<std::string> &seqs, const std::string &phix,
-                          int word_size, int min_matches, bool non_overlapping);
+                          int word_size, int min_matches, bool non_overlapping, int n_threads = 1);
 
 // ------------------------------------------------------------------- K2 derep ---
 // Streaming dereplication reproducing derepFastq/qtables2, including the chunk-dependent order

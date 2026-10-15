@@ -145,7 +145,7 @@ std::vector<int> kdist_matches(const std::vector<std::string> &s1,
 
 // ------------------------------------------------------------------ filter.cpp ---
 std::vector<int> match_ref(const std::vector<std::string> &seqs, const std::string &ref,
-                           int word_size, bool non_overlapping);
+                           int word_size, bool non_overlapping, int n_threads = 1);
 // Quality matrix nrow x ncol row-major; values == NA_QUAL terminate a row (like R's NA).
 constexpr int32_t NA_QUAL = INT32_MIN;
 std::vector<double> matrix_ee(const int32_t *quals, int nrow, int ncol);

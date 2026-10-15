@@ -322,7 +322,7 @@ NB_MODULE(_core, m) {
 
   // ------------------------------------------------------------------------------ filter ---
   m.def("match_ref", &dada2::match_ref, "seqs"_a, "ref"_a, "word_size"_a, "non_overlapping"_a,
-        nb::call_guard<nb::gil_scoped_release>(),
+        "n_threads"_a = 1, nb::call_guard<nb::gil_scoped_release>(),
         "Number of word_size-mers of each sequence found in the (circular) reference.");
   m.attr("NA_QUAL") = dada2::NA_QUAL;
   m.def(
@@ -471,15 +471,16 @@ NB_MODULE(_core, m) {
   m.def(
       "is_phix",
       [](const std::vector<std::string> &seqs, const std::string &phix, int word_size,
-         int min_matches, bool non_overlapping) {
+         int min_matches, bool non_overlapping, int n_threads) {
         std::vector<bool> r;
         {
           nb::gil_scoped_release release;
-          r = dada2::is_phix(seqs, phix, word_size, min_matches, non_overlapping);
+          r = dada2::is_phix(seqs, phix, word_size, min_matches, non_overlapping, n_threads);
         }
         return bools_to_numpy(r);
       },
       "seqs"_a, "phix"_a, "word_size"_a = 16, "min_matches"_a = 2, "non_overlapping"_a = true,
+      "n_threads"_a = 1,
       "Whether each sequence matches the phiX genome (or its reverse complement).");
   m.def(
       "seq_complexity",

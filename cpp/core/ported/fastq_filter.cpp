@@ -7,6 +7,9 @@
 // The R code applies each filter to the whole chunk in sequence; because every step only looks
 // at the read itself, the same result is obtained by running the steps per read. For paired
 // reads R keeps a pair only if both mates pass every step, i.e. pass_F && pass_R.
+//
+// The expected errors use a 256-entry table of the same pow(10, -q/10) values; the phiX check runs
+// in parallel (match_ref).
 
 #include <algorithm>
 #include <cmath>
@@ -34,7 +37,7 @@ int detect_quality_offset(const std::vector<std::string> &quals) {
 }
 
 std::vector<bool> is_phix(const std::vector<std::string> &seqs, const std::string &phix,
-                          int word_size, int min_matches, bool non_overlapping) {
+                          int word_size, int min_matches, bool non_overlapping, int n_threads) {
   std::string rc(phix.rbegin(), phix.rend());
   for (char &c : rc) {
     switch (c) {
@@ -45,8 +48,8 @@ std::vector<bool> is_phix(const std::vector<std::string> &seqs, const std::strin
       default: break;
     }
   }
-  std::vector<int> hits = match_ref(seqs, phix, word_size, non_overlapping);
-  std::vector<int> hits_rc = match_ref(seqs, rc, word_size, non_overlapping);
+  std::vector<int> hits = match_ref(seqs, phix, word_size, non_overlapping, n_threads);
+  std::vector<int> hits_rc = match_ref(seqs, rc, word_size, non_overlapping, n_threads);
   std::vector<bool> out(seqs.size());
   for (size_t i = 0; i < seqs.size(); ++i)
     out[i] = (hits[i] >= min_matches) || (hits_rc[i] >= min_matches);
@@ -71,6 +74,12 @@ MateFilterResult filter_mate(const std::vector<std::string> &seqs,
   const bool use_min_q = p.min_q > p.trunc_q;
   const bool use_ee = std::isfinite(p.max_ee);
   const unsigned char trunc_char = static_cast<unsigned char>(p.trunc_q + p.qual_offset);
+  // Expected error of each quality character: the same pow() values, computed once.
+  double ee_of_char[256];
+  for (int c = 0; c < 256; ++c) {
+    const int qq = c - p.qual_offset;
+    ee_of_char[c] = pow(10.0, -qq / 10.0);
+  }
 
   auto body = [&](size_t b, size_t e) {
     for (size_t i = b; i < e; ++i) {
@@ -121,10 +130,7 @@ MateFilterResult filter_mate(const std::vector<std::string> &seqs,
       // maxEE (C_matrixEE)
       if (use_ee) {
         double ee = 0.0;
-        for (int j = lo; j < hi; ++j) {
-          const int qq = int(static_cast<unsigned char>(q[j])) - p.qual_offset;
-          ee += pow(10.0, -qq / 10.0);
-        }
+        for (int j = lo; j < hi; ++j) ee += ee_of_char[static_cast<unsigned char>(q[j])];
         if (!(ee <= p.max_ee)) continue;
       }
       r.start[i] = lo;
@@ -145,7 +151,7 @@ MateFilterResult filter_mate(const std::vector<std::string> &seqs,
       }
     }
     if (p.rm_phix && !trimmed.empty()) {
-      std::vector<bool> phi = is_phix(trimmed, phix, 16, 2, true);
+      std::vector<bool> phi = is_phix(trimmed, phix, 16, 2, true, n_threads);
       for (size_t k = 0; k < idx.size(); ++k)
         if (phi[k]) r.pass[idx[k]] = 0;
     }

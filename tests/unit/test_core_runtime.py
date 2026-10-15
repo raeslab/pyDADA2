@@ -338,3 +338,45 @@ def test_dada_uniques_batch_interrupt():
         timer.cancel()
     # the pool and the handlers still work afterwards
     _same(_batch(samples[:1], n_threads=2)[0], core.dada_uniques(*samples[0]))
+
+
+def _match_ref_reference(seqs, ref, w, non_overlapping):
+    # upstream C_matchRef semantics: words of the circularised reference, scan with skip
+    ref2 = ref + ref[:w]
+    words = {ref2[i : i + w] for i in range(len(ref))}
+    out = []
+    for s in seqs:
+        count, j = 0, 0
+        while len(s) >= w and j <= len(s) - w:
+            if s[j : j + w] in words:
+                count += 1
+                if non_overlapping:
+                    j += w
+            j += 1
+        out.append(count)
+    return out
+
+
+def test_match_ref_matches_upstream_semantics():
+    from pydada2.datasets import phix_genome
+
+    rng = np.random.default_rng(11)
+    g = phix_genome()
+    seqs = []
+    for _ in range(600):
+        n = int(rng.choice([3, 15, 16, 17, 60, 240]))
+        if rng.random() < 0.6:
+            st = int(rng.integers(0, len(g) - n))
+            s = list(g[st : st + n])
+        else:
+            s = list(rng.choice(list("ACGT"), n))
+        for _ in range(int(rng.choice([0, 0, 1, 4]))):
+            if s:
+                s[int(rng.integers(len(s)))] = str(rng.choice(list("ACGTNa-")))
+        seqs.append("".join(s))
+    for ref in (g[:900], "ACGTACGTAC", "ACGTNACGTACGTTT"):
+        for w in (1, 5, 16, 32, 33):
+            for nono in (True, False):
+                exp = _match_ref_reference(seqs, ref, w, nono)
+                for nt in (1, 4):
+                    assert list(core.match_ref(seqs, ref, w, nono, nt)) == exp
