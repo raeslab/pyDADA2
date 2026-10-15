@@ -184,7 +184,7 @@ NB_MODULE(_core, m) {
 
   m.def(
       "_parallel_selftest",
-      [](size_t n, size_t grain, int n_threads, long long fail_at) {
+      [](size_t n, size_t grain, int n_threads, long long fail_at, size_t nested) {
         std::vector<int64_t> out(n, 0);
         std::atomic<int> calls{0};
         {
@@ -196,15 +196,26 @@ NB_MODULE(_core, m) {
                 for (size_t i = b; i < e; ++i) {
                   if (fail_at >= 0 && static_cast<long long>(i) == fail_at)
                     throw dada2::Error("parallel failure at " + std::to_string(i));
-                  out[i] = static_cast<int64_t>(i) * static_cast<int64_t>(i);
+                  int64_t v = static_cast<int64_t>(i) * static_cast<int64_t>(i);
+                  if (nested > 0) {  // inner parallel region adding `nested` zeros
+                    std::vector<int64_t> part(nested, 0);
+                    dada2::parallel_for(
+                        0, nested, [&](size_t ib, size_t ie) {
+                          for (size_t k = ib; k < ie; ++k) part[k] = 0;
+                        },
+                        1, n_threads);
+                    for (int64_t x : part) v += x;
+                  }
+                  out[i] = v;
                 }
               },
               grain, n_threads);
         }
         return std::make_pair(to_numpy(std::move(out)), calls.load());
       },
-      "n"_a, "grain"_a, "n_threads"_a, "fail_at"_a = -1,
-      "Test helper: squares 0..n-1 with parallel_for; returns (values, number of chunks).");
+      "n"_a, "grain"_a, "n_threads"_a, "fail_at"_a = -1, "nested"_a = 0,
+      "Test helper: squares 0..n-1 with parallel_for (optionally running a nested parallel_for\n"
+      "of `nested` items per index); returns (values, number of chunks).");
 
   m.def(
       "_interrupt_selftest",
@@ -265,6 +276,76 @@ NB_MODULE(_core, m) {
       "arrays (clustering columns, birth_subs columns, trans, cluster_quals, map, pval_raw);\n"
       "indices are 0-based, -1/NaN mean NA.");
 
+  nb::class_<dada2::AlignmentCache>(
+      m, "AlignmentCache",
+      "Cache of centre-vs-raw comparisons for repeated dada runs on the same samples (one slot\n"
+      "per sample); comparisons beyond budget_bytes are computed without being cached.")
+      .def(nb::init<size_t, size_t>(), "n_slots"_a, "budget_bytes"_a)
+      .def_prop_ro("n_slots", &dada2::AlignmentCache::n_slots)
+      .def_prop_ro("budget_bytes", &dada2::AlignmentCache::budget_bytes)
+      .def_prop_ro("bytes_used", &dada2::AlignmentCache::bytes_used);
+
+  m.def(
+      "dada_uniques_batch",
+      [](const std::vector<std::vector<std::string>> &seqs,
+         const std::vector<std::vector<int>> &abundances,
+         const std::vector<std::vector<bool>> &priors, const std::vector<CArray<double>> &errs,
+         const std::vector<std::optional<CArray<double>>> &quals, int match, int mismatch,
+         int gap, bool use_kmers, double kdist_cutoff, int band_size, double omega_a,
+         double omega_p, double omega_c, bool detect_singletons, int max_clust, double min_fold,
+         int min_hamming, int min_abund, bool use_quals, bool final_consensus,
+         bool vectorized_alignment, int homo_gap, int sse, bool gapless, bool greedy,
+         int n_threads, int sample_threads, bool verbose, std::optional<nb::callable> log,
+         dada2::AlignmentCache *cache) {
+        const size_t n = seqs.size();
+        if (abundances.size() != n || priors.size() != n || errs.size() != n || quals.size() != n)
+          throw std::invalid_argument("All per-sample inputs must have one entry per sample.");
+        std::vector<dada2::DadaInput> in(n);
+        for (size_t k = 0; k < n; ++k) {
+          if (errs[k].shape(0) != 16) throw std::invalid_argument("Error matrix must have 16 rows.");
+          in[k].seqs = &seqs[k];
+          in[k].abundances = &abundances[k];
+          in[k].priors = &priors[k];
+          in[k].err = errs[k].data();
+          in[k].err_ncol = static_cast<int>(errs[k].shape(1));
+          if (quals[k] && quals[k]->shape(0) > 0) {
+            if (quals[k]->shape(0) != seqs[k].size())
+              throw std::invalid_argument("quals must have one row per unique sequence.");
+            in[k].quals = quals[k]->data();
+            in[k].quals_ncol = static_cast<int>(quals[k]->shape(1));
+          }
+        }
+        dada2::DadaOptions opt;
+        opt.match = match; opt.mismatch = mismatch; opt.gap = gap; opt.use_kmers = use_kmers;
+        opt.kdist_cutoff = kdist_cutoff; opt.band_size = band_size; opt.omega_a = omega_a;
+        opt.omega_p = omega_p; opt.omega_c = omega_c; opt.detect_singletons = detect_singletons;
+        opt.max_clust = max_clust; opt.min_fold = min_fold; opt.min_hamming = min_hamming;
+        opt.min_abund = min_abund; opt.use_quals = use_quals; opt.final_consensus = final_consensus;
+        opt.vectorized_alignment = vectorized_alignment; opt.homo_gap = homo_gap; opt.sse = sse;
+        opt.gapless = gapless; opt.greedy = greedy;
+        std::vector<dada2::DadaOutput> outs;
+        {
+          PyHandlers handlers(std::move(log));
+          nb::gil_scoped_release release;
+          outs = dada2::dada_uniques_batch(in, opt, n_threads, sample_threads, verbose, cache);
+        }
+        nb::list res;
+        for (auto &o : outs) res.append(dada_output_to_dict(std::move(o)));
+        return res;
+      },
+      "seqs"_a, "abundances"_a, "priors"_a, "errs"_a, "quals"_a, "match"_a = 5,
+      "mismatch"_a = -4, "gap"_a = -8, "use_kmers"_a = true, "kdist_cutoff"_a = 0.42,
+      "band_size"_a = 16, "omega_a"_a = 1e-40, "omega_p"_a = 1e-4, "omega_c"_a = 1e-40,
+      "detect_singletons"_a = false, "max_clust"_a = 0, "min_fold"_a = 1.0, "min_hamming"_a = 1,
+      "min_abund"_a = 1, "use_quals"_a = true, "final_consensus"_a = false,
+      "vectorized_alignment"_a = true, "homo_gap"_a = -8, "sse"_a = 2, "gapless"_a = true,
+      "greedy"_a = true, "n_threads"_a = 1, "sample_threads"_a = 1, "verbose"_a = false,
+      "log"_a = nb::none(), "cache"_a = nb::none(),
+      "dada_uniques on several samples (lists with one entry per sample; sample i uses cache\n"
+      "slot i). Up to sample_threads samples run concurrently, each with up to n_threads\n"
+      "threads, on one shared pool. Returns one dict per sample, as dada_uniques; the results\n"
+      "do not depend on the thread counts. Log messages only come from the calling thread.");
+
   // ---------------------------------------------------------------------------- evaluate ---
   m.def("nwalign", &dada2::nwalign, "s1"_a, "s2"_a, "match"_a, "mismatch"_a, "gap_p"_a,
         "homo_gap_p"_a, "band"_a, "endsfree"_a, nb::call_guard<nb::gil_scoped_release>(),
@@ -290,7 +371,7 @@ NB_MODULE(_core, m) {
 
   // ------------------------------------------------------------------------------ filter ---
   m.def("match_ref", &dada2::match_ref, "seqs"_a, "ref"_a, "word_size"_a, "non_overlapping"_a,
-        nb::call_guard<nb::gil_scoped_release>(),
+        "n_threads"_a = 1, nb::call_guard<nb::gil_scoped_release>(),
         "Number of word_size-mers of each sequence found in the (circular) reference.");
   m.attr("NA_QUAL") = dada2::NA_QUAL;
   m.def(
@@ -347,17 +428,58 @@ NB_MODULE(_core, m) {
                                    "Reference k-mer model for the naive Bayesian classifier.")
       .def(
           "__init__",
-          [](dada2::TaxonomyModel *self, const std::vector<std::string> &refs,
-             const std::vector<int> &ref_to_genus, CArray<int32_t> genusmat) {
+          [](dada2::TaxonomyModel *self, nb::typed<nb::sequence, nb::str> refs,
+             const std::vector<int> &ref_to_genus,
+             CArray<int32_t> genusmat, int n_threads) {
+            // Read the reference strings in place (no copy of the ~GB of sequence data): the
+            // tuple keeps the str objects alive while the GIL is released.
+            nb::tuple keep = nb::steal<nb::tuple>(PySequence_Tuple(refs.ptr()));
+            if (!keep.is_valid()) throw nb::python_error();
+            const size_t n = keep.size();
+            std::vector<std::string_view> views;
+            views.reserve(n);
+            for (size_t i = 0; i < n; ++i) {
+              PyObject *o = PyTuple_GetItem(keep.ptr(), static_cast<Py_ssize_t>(i));
+              if (!PyUnicode_Check(o)) throw nb::type_error("refs must be a sequence of str.");
+              Py_ssize_t len = 0;
+              const char *data = PyUnicode_AsUTF8AndSize(o, &len);
+              if (!data) throw nb::python_error();
+              views.emplace_back(data, static_cast<size_t>(len));
+            }
             std::vector<int> gm(genusmat.data(), genusmat.data() + genusmat.size());
             const int ngenus = static_cast<int>(genusmat.shape(0));
             const int nlevel = static_cast<int>(genusmat.shape(1));
             nb::gil_scoped_release release;
-            new (self) dada2::TaxonomyModel(refs, ref_to_genus, gm, ngenus, nlevel);
+            new (self) dada2::TaxonomyModel(views, ref_to_genus, gm, ngenus, nlevel, n_threads);
           },
-          "refs"_a, "ref_to_genus"_a, "genusmat"_a)
+          "refs"_a, "ref_to_genus"_a, "genusmat"_a, "n_threads"_a = 1)
       .def_prop_ro("ngenus", &dada2::TaxonomyModel::ngenus)
-      .def_prop_ro("nlevel", &dada2::TaxonomyModel::nlevel);
+      .def_prop_ro("nlevel", &dada2::TaxonomyModel::nlevel)
+      .def("__getstate__",
+           [](nb::handle self) {
+             const auto &model = nb::cast<const dada2::TaxonomyModel &>(self);
+             const size_t ngenus = static_cast<size_t>(model.ngenus());
+             const size_t nlevel = static_cast<size_t>(model.nlevel());
+             std::vector<int32_t> gm(model.genusmat().begin(), model.genusmat().end());
+             size_t tshape[2] = {model.table_size() / static_cast<size_t>(model.ngenus_pad()),
+                                 static_cast<size_t>(model.ngenus_pad())};
+             // A read-only view of the table, kept alive by the model object.
+             nb::ndarray<nb::numpy, const float, nb::ndim<2>> table(
+                 model.log_probability(), 2, tshape, self);
+             return nb::make_tuple(to_numpy(std::move(gm), {ngenus, nlevel}), table);
+           })
+      .def("__setstate__",
+           [](dada2::TaxonomyModel *self, const nb::tuple &state) {
+             if (state.size() != 2) throw std::invalid_argument("Invalid TaxonomyModel state.");
+             auto gm = nb::cast<CArray<int32_t>>(state[0]);
+             auto table = nb::cast<nb::ndarray<const float, nb::ndim<2>, nb::c_contig,
+                                               nb::device::cpu>>(state[1]);
+             std::vector<int> gmv(gm.data(), gm.data() + gm.size());
+             const int ngenus = static_cast<int>(gm.shape(0));
+             const int nlevel = static_cast<int>(gm.shape(1));
+             nb::gil_scoped_release release;
+             new (self) dada2::TaxonomyModel(gmv, ngenus, nlevel, table.data(), table.size());
+           });
 
   m.attr("NBOOT") = dada2::NBOOT;
   m.def(
@@ -409,15 +531,16 @@ NB_MODULE(_core, m) {
   m.def(
       "is_phix",
       [](const std::vector<std::string> &seqs, const std::string &phix, int word_size,
-         int min_matches, bool non_overlapping) {
+         int min_matches, bool non_overlapping, int n_threads) {
         std::vector<bool> r;
         {
           nb::gil_scoped_release release;
-          r = dada2::is_phix(seqs, phix, word_size, min_matches, non_overlapping);
+          r = dada2::is_phix(seqs, phix, word_size, min_matches, non_overlapping, n_threads);
         }
         return bools_to_numpy(r);
       },
       "seqs"_a, "phix"_a, "word_size"_a = 16, "min_matches"_a = 2, "non_overlapping"_a = true,
+      "n_threads"_a = 1,
       "Whether each sequence matches the phiX genome (or its reverse complement).");
   m.def(
       "seq_complexity",

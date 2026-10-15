@@ -4,6 +4,12 @@
 // Changes for pydada2:
 //  * C_nwvec -> dada2::nwvec (api.h); the R band argument was cast through (size_t), now passed as int (same value).
 //  * __restrict__ -> DADA2_RESTRICT (MSVC); debug printer removed; Rcpp::stop -> dada2_stop.
+//  * nwalign_vectorized2: the diagonal scores are filled from a reversed copy of s1, so both
+//    sequences are read contiguously and the loop vectorises (same values); the DP matrices and
+//    traceback buffers are thread-local and reused between calls instead of malloc'ed per call
+//    (every cell that is read is written first in each call, checked with valgrind memcheck).
+
+#include <vector>
 
 #include "api.h"
 #include "dada.h"
@@ -64,6 +70,25 @@ void dploop_vec_swap(int16_t *DADA2_RESTRICT ptr_left, int16_t *DADA2_RESTRICT p
   }
 }
 
+namespace {
+
+// Per-thread scratch buffers of nwalign_vectorized2 (grown as needed, released when very large).
+struct NwScratch {
+  std::vector<int16_t> d, p, diag_buf;
+  std::vector<char> s1r, al0, al1;
+  void trim() {
+    const size_t big = (size_t)16 << 20;  // keep up to 16 MiB per buffer between calls
+    if(d.capacity() * sizeof(int16_t) > big) { std::vector<int16_t>().swap(d); std::vector<int16_t>().swap(p); }
+  }
+};
+
+NwScratch &nw_scratch() {
+  thread_local NwScratch scratch;
+  return scratch;
+}
+
+}  // namespace
+
 char **nwalign_vectorized2(const char *s1, size_t len1, const char *s2, size_t len2, int16_t match, int16_t mismatch, int16_t gap_p, int16_t end_gap_p, int band) {
   size_t row, col, ncol, nrow, foo;
   size_t i,j;
@@ -93,10 +118,16 @@ char **nwalign_vectorized2(const char *s1, size_t len1, const char *s2, size_t l
   //  ncol = 3 + (len1+len2+1)/2; // 3 = left boundary + center + right boundary !!!
   ncol = 2 + start_col + ((len2-len1+band)<len2 ? (len2-len1+band) : len2)/2;
   nrow = len1 + len2 + 1;
-  int16_t *d = (int16_t *) malloc(ncol * nrow * sizeof(int16_t));
-  int16_t *p = (int16_t *) malloc(ncol * nrow * sizeof(int16_t));
-  int16_t *diag_buf = (int16_t *) malloc(ncol * sizeof(int16_t));
-  if (d == NULL || p == NULL || diag_buf == NULL)  dada2_stop("Memory allocation failed.");
+  NwScratch &scratch = nw_scratch();
+  if(scratch.d.size() < ncol * nrow) { scratch.d.resize(ncol * nrow); scratch.p.resize(ncol * nrow); }
+  if(scratch.diag_buf.size() < ncol) scratch.diag_buf.resize(ncol);
+  if(scratch.s1r.size() < len1) scratch.s1r.resize(len1);
+  if(scratch.al0.size() < nrow + 1) { scratch.al0.resize(nrow + 1); scratch.al1.resize(nrow + 1); }
+  int16_t *d = scratch.d.data();
+  int16_t *p = scratch.p.data();
+  int16_t *diag_buf = scratch.diag_buf.data();
+  char *s1r = scratch.s1r.data();  // s1 reversed: s1[i] == s1r[len1-1-i]
+  for(i=0;i<len1;i++) s1r[i] = s1[len1-1-i];
   
   // For banding issues later on
   int16_t fill_val = INT16_MIN - MIN(MIN(mismatch, gap_p), MIN(match, 0));
@@ -157,8 +188,15 @@ char **nwalign_vectorized2(const char *s1, size_t len1, const char *s2, size_t l
   
   while(row <= (len1+len2)) {
       // Fill out row
-    for(col=col_min,i=i_max,j=j_min;col<(1+col_max);col++,i--,j++) {
-      diag_buf[col] = d[(row-2)*ncol + col] + (s1[i] == s2[j] ? match : mismatch);
+    // == for(col=col_min,i=i_max,j=j_min;col<=col_max;col++,i--,j++)
+    //      diag_buf[col] = d[(row-2)*ncol + col] + (s1[i] == s2[j] ? match : mismatch);
+    {
+      const char *DADA2_RESTRICT a = s1r + (len1 - 1 - i_max);  // a[t] == s1[i_max - t]
+      const char *DADA2_RESTRICT b = s2 + j_min;
+      const int16_t *DADA2_RESTRICT dprev = &d[(row-2)*ncol + col_min];
+      int16_t *DADA2_RESTRICT dbuf = &diag_buf[col_min];
+      const size_t nn = col_max + 1 - col_min;
+      for(size_t t=0;t<nn;t++) dbuf[t] = dprev[t] + (a[t] == b[t] ? match : mismatch);
     }
     ptr_left = &d[(row-1)*ncol + col_min-even];
     ptr_diag = &diag_buf[col_min];
@@ -248,9 +286,8 @@ char **nwalign_vectorized2(const char *s1, size_t len1, const char *s2, size_t l
 //    dada2_log("Score: %d\n", d[(len1+len2)*ncol + (2*start_col+len2-len1)/2]);
 //  }
 
-  char *al0 = (char *) malloc((nrow+1) * sizeof(char));
-  char *al1 = (char *) malloc((nrow+1) * sizeof(char));
-  if(al0 == NULL || al1 == NULL) dada2_stop("Memory allocation failed.");
+  char *al0 = scratch.al0.data();
+  char *al1 = scratch.al1.data();
   
   // Trace back over p to form the alignment.
   size_t len_al = 0;
@@ -272,18 +309,12 @@ char **nwalign_vectorized2(const char *s1, size_t len1, const char *s2, size_t l
         al1[len_al] = '-';
         break;
       default:
-        free(d); free(p); free(diag_buf); free(al0); free(al1);
         dada2_stop("N-W Align out of range.");
     }
     len_al++;
   }
   al0[len_al] = '\0';
   al1[len_al] = '\0';
-  
-  // Free DP objects
-  free(d);
-  free(p);
-  free(diag_buf);
   
   // Return to input ordering
   if(swap) {
@@ -307,9 +338,7 @@ char **nwalign_vectorized2(const char *s1, size_t len1, const char *s2, size_t l
   al[0][len_al] = '\0';
   al[1][len_al] = '\0';
   
-  free(al0);
-  free(al1);
-  
+  scratch.trim();
   return al;
 }
 

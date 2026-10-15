@@ -106,3 +106,55 @@ def test_add_species_without_genus_column():
     tab = pd.DataFrame({"Level1": ["Genus"]}, index=["CCGGTT"])
     out = dada2.add_species(tab, [("x Genus species", "AACCGGTTAACCGGTT")], verbose=1)
     assert out["Species"].tolist() == ["species"]
+
+
+def _fitted_classifier(n_jobs=1):
+    return TaxonomyClassifier(random_state=3, n_jobs=n_jobs).fit(
+        example_path("example_train_set.fa.gz")
+    )
+
+
+def _queries():
+    return [s for _, s in read_fasta(example_path("ten_16s.100.fa.gz"))[:6]]
+
+
+def test_classifier_pickle_and_deepcopy_roundtrip():
+    import copy
+    import pickle
+
+    clf = _fitted_classifier()
+    tax, boot = clf.predict(_queries(), return_bootstrap=True)
+    for clone in (pickle.loads(pickle.dumps(clf)), copy.deepcopy(clf)):
+        assert clone.model_ is not clf.model_
+        t2, b2 = clone.predict(_queries(), return_bootstrap=True)
+        pd.testing.assert_frame_equal(t2, tax)
+        pd.testing.assert_frame_equal(b2, boot)
+
+
+def test_model_independent_of_n_jobs():
+    a = _fitted_classifier(1).model_.__getstate__()
+    b = _fitted_classifier(4).model_.__getstate__()
+    np.testing.assert_array_equal(a[0], b[0])
+    assert np.array_equal(a[1], b[1])  # bit-identical float table
+
+
+def test_model_table_layout():
+    # k-mer-major table: row kmer, column genus (padded to a multiple of 16 with zeros);
+    # entries are log((n_g(kmer) + prior(kmer)) / (M_g + 1)) as upstream.
+    from pydada2 import _core
+
+    refs = ["ACGTACGTAAC" * 3, "ACGTACGTAAC" * 3, "TTTTGGGGCCCCAAAA"]
+    model = _core.TaxonomyModel(refs, [0, 0, 1], np.array([[0], [1]], dtype=np.int32))
+    _gm, table = model.__getstate__()
+    assert table.shape == (4**8, 16) and not table.flags.writeable
+    assert (table[:, 2:] == 0).all()
+
+    def code(s):
+        return int("".join(str("ACGT".index(c)) for c in s), 4)
+
+    k = code("ACGTACGT")
+    prior = (2 + 0.5) / (1 + 3)
+    assert table[k, 0] == pytest.approx(np.log((2 + prior) / 3), rel=1e-6)
+    assert table[k, 1] == pytest.approx(np.log((0 + prior) / 2), rel=1e-6)
+    absent = code("GGGGGGGG")
+    assert table[absent, 1] == pytest.approx(np.log((0.5 / 4) / 2), rel=1e-6)

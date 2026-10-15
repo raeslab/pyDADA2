@@ -11,7 +11,9 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -68,12 +70,57 @@ struct DadaOutput {
   std::vector<double> pval_raw;
 };
 
+// Cache of centre-vs-raw comparisons (k-mer distance and substitutions) for repeated
+// dada_uniques runs on the same samples, e.g. the rounds of a self-consistent fit. Alignments do
+// not depend on the error matrix, so the cached runs give identical results; only the lambdas
+// are recomputed. One slot per sample; a slot is reset when the sequences or the alignment
+// parameters change. Memory is bounded: above budget_bytes (all slots together) comparisons are
+// computed without being cached. A slot must not be used by two calls at the same time.
+class AlignmentCache {
+ public:
+  AlignmentCache(size_t n_slots, size_t budget_bytes);
+  ~AlignmentCache();
+  AlignmentCache(const AlignmentCache &) = delete;
+  AlignmentCache &operator=(const AlignmentCache &) = delete;
+  size_t n_slots() const;
+  size_t budget_bytes() const;
+  size_t bytes_used() const;
+  struct Impl;
+  Impl &impl() { return *impl_; }
+
+ private:
+  std::unique_ptr<Impl> impl_;
+};
+
 // err: 16 x err_ncol row-major. quals: nraw x quals_ncol row-major (quals_ncol == max sequence
-// length), or nullptr/quals_ncol == 0 when there are no qualities.
+// length), or nullptr/quals_ncol == 0 when there are no qualities. cache/cache_slot: optional
+// comparison cache (see AlignmentCache).
 DadaOutput dada_uniques(const std::vector<std::string> &seqs, const std::vector<int> &abundances,
                         const std::vector<bool> &priors, const double *err, int err_ncol,
                         const double *quals, int quals_ncol, const DadaOptions &opt, int n_threads,
-                        bool verbose);
+                        bool verbose, AlignmentCache *cache = nullptr, size_t cache_slot = 0);
+
+// One sample of dada_uniques_batch (pointers must stay valid during the call).
+struct DadaInput {
+  const std::vector<std::string> *seqs = nullptr;
+  const std::vector<int> *abundances = nullptr;
+  const std::vector<bool> *priors = nullptr;
+  const double *err = nullptr;
+  int err_ncol = 0;
+  const double *quals = nullptr;
+  int quals_ncol = 0;
+};
+
+// dada_uniques on several samples. Up to sample_threads samples run concurrently (largest
+// first), each with up to n_threads threads; all threads come from one shared pool, so at most
+// max(n_threads, sample_threads) run at once. Sample i uses cache slot i. The results equal
+// those of separate dada_uniques calls. The calling thread checks for interrupts while it waits;
+// the first error (or interrupt) stops the other samples at their next check and is rethrown.
+// Logging (verbose) only reaches the calling thread's log handler.
+std::vector<DadaOutput> dada_uniques_batch(const std::vector<DadaInput> &samples,
+                                           const DadaOptions &opt, int n_threads,
+                                           int sample_threads, bool verbose,
+                                           AlignmentCache *cache = nullptr);
 
 // ------------------------------------------------------------------ evaluate.cpp ---
 std::pair<std::string, std::string> nwalign(const std::string &s1, const std::string &s2, int match,
@@ -98,7 +145,7 @@ std::vector<int> kdist_matches(const std::vector<std::string> &s1,
 
 // ------------------------------------------------------------------ filter.cpp ---
 std::vector<int> match_ref(const std::vector<std::string> &seqs, const std::string &ref,
-                           int word_size, bool non_overlapping);
+                           int word_size, bool non_overlapping, int n_threads = 1);
 // Quality matrix nrow x ncol row-major; values == NA_QUAL terminate a row (like R's NA).
 constexpr int32_t NA_QUAL = INT32_MIN;
 std::vector<double> matrix_ee(const int32_t *quals, int nrow, int ncol);
@@ -106,6 +153,10 @@ std::vector<double> matrix_ee(const int32_t *quals, int nrow, int ncol);
 // ------------------------------------------------------------------ chimera.cpp ---
 bool is_bimera(const std::string &sq, const std::vector<std::string> &pars, bool allow_one_off,
                int min_one_off_par_dist, int match, int mismatch, int gap_p, int max_shift);
+// is_bimera with the parents given by pointer.
+bool is_bimera_ptr(const std::string &sq, const std::vector<const std::string *> &pars,
+                   bool allow_one_off, int min_one_off_par_dist, int match, int mismatch,
+                   int gap_p, int max_shift);
 // mat: nsample x nseq row-major abundance table. Returns (nflag, nsam) per sequence.
 std::pair<std::vector<int>, std::vector<int>> table_bimera(
     const int32_t *mat, int nrow, int ncol, const std::vector<std::string> &seqs, double min_fold,
@@ -116,21 +167,35 @@ std::pair<std::vector<int>, std::vector<int>> table_bimera(
 constexpr int NBOOT = 100;
 
 // Fit-once reference k-mer model (the first half of upstream C_assign_taxonomy2).
+//
+// The log-probability table holds the same float values as upstream's, but k-mer-major:
+// log_probability()[kmer * ngenus_pad() + g] for g < ngenus() (upstream: [g * 4^8 + kmer]); the
+// ngenus_pad() - ngenus() padding columns are 0. The layout lets the classifier stream the rows
+// of a query's k-mers for all genera at once.
 class TaxonomyModel {
  public:
+  // refs: reference sequences (only read during construction).
   // ref_to_genus: 0-based genus index for each reference.
   // genusmat: ngenus x nlevel row-major integer taxonomy codes.
-  TaxonomyModel(const std::vector<std::string> &refs, const std::vector<int> &ref_to_genus,
-                const std::vector<int> &genusmat, int ngenus, int nlevel);
+  TaxonomyModel(const std::vector<std::string_view> &refs, const std::vector<int> &ref_to_genus,
+                const std::vector<int> &genusmat, int ngenus, int nlevel, int n_threads = 1);
+  // Restore a model from its table (as returned by log_probability(); used for pickling).
+  TaxonomyModel(const std::vector<int> &genusmat, int ngenus, int nlevel, const float *table,
+                size_t table_size);
   int ngenus() const { return ngenus_; }
   int nlevel() const { return nlevel_; }
-  const std::vector<float> &log_probability() const { return lgk_probability_; }
+  int ngenus_pad() const { return ngenus_pad_; }
+  const float *log_probability() const { return table_.get(); }
+  size_t table_size() const;  // number of floats: 4^8 * ngenus_pad()
   const std::vector<int> &genusmat() const { return genusmat_; }
 
  private:
-  int ngenus_, nlevel_;
-  std::vector<float> lgk_probability_;
+  struct AlignedDelete {
+    void operator()(float *p) const;
+  };
+  int ngenus_, nlevel_, ngenus_pad_;
   std::vector<int> genusmat_;
+  std::unique_ptr<float[], AlignedDelete> table_;
 };
 
 struct TaxonomyResult {

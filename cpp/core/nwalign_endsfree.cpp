@@ -3,6 +3,9 @@
 //
 // Changes for pydada2:
 //  * Rcpp::stop -> dada2_stop; added al_free helper.
+//  * raw_align/sub_new optionally report the k-mer distance (for the comparison cache).
+//  * raw_align: the ordered k-mer distance (gapless screen) is only computed when the k-mer
+//    screen passed (it was computed and discarded for ~75 % of comparisons).
 
 #include <string.h>
 #include <stdlib.h>
@@ -12,7 +15,7 @@
  * Banded Needleman Wunsch
  */
 
-char **raw_align(Raw *raw1, Raw *raw2, int match, int mismatch, int gap_p, int homo_gap_p, bool use_kmers, double kdist_cutoff, int band, bool vectorized_alignment, int SSE, bool gapless) {
+char **raw_align(Raw *raw1, Raw *raw2, int match, int mismatch, int gap_p, int homo_gap_p, bool use_kmers, double kdist_cutoff, int band, bool vectorized_alignment, int SSE, bool gapless, double *kdist_out) {
   char **al;
   double kdist = 0.0;
   double kodist = -1.0; // Needs to be different than kdist for fall-back when use_kmers=FALSE
@@ -36,8 +39,11 @@ char **raw_align(Raw *raw1, Raw *raw2, int match, int mismatch, int gap_p, int h
     }
   }
   
+  if(kdist_out) { *kdist_out = kdist; }
+
   // GAPLESS SCREEN (using KMERs)
-  if(use_kmers && gapless) {
+  // pydada2: skipped when the k-mer screen has already rejected the pair (kodist is then unused).
+  if(use_kmers && gapless && !(kdist > kdist_cutoff)) {
     if(SSE >= 1) {
       kodist = kord_dist_SSEi(raw1->kord, raw1->length, raw2->kord, raw2->length, KMER_SIZE);
     } else {
@@ -644,12 +650,12 @@ Sub *al2subs(char **al) {
 }
 
 // Wrapper for al2subs(raw_align(...)) that manages memory and qualities
-Sub *sub_new(Raw *raw0, Raw *raw1, int match, int mismatch, int gap_p, int homo_gap_p, bool use_kmers, double kdist_cutoff, int band, bool vectorized_alignment, int SSE, bool gapless) {
+Sub *sub_new(Raw *raw0, Raw *raw1, int match, int mismatch, int gap_p, int homo_gap_p, bool use_kmers, double kdist_cutoff, int band, bool vectorized_alignment, int SSE, bool gapless, double *kdist_out) {
   int s;
   char **al;
   Sub *sub;
 
-  al = raw_align(raw0, raw1, match, mismatch, gap_p, homo_gap_p, use_kmers, kdist_cutoff, band, vectorized_alignment, SSE, gapless);
+  al = raw_align(raw0, raw1, match, mismatch, gap_p, homo_gap_p, use_kmers, kdist_cutoff, band, vectorized_alignment, SSE, gapless, kdist_out);
   sub = al2subs(al);
 
   if(sub) {

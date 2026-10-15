@@ -6,7 +6,8 @@
 //  * Indices are 0-based; R NA -> -1 (integers) / NaN (doubles).
 //  * The cluster quality matrix is returned clusters x positions (R transposed it afterwards).
 //  * Unused b_make_positional_substitution_df removed.
-//  * Transition matrix: explicit range check on the quality index (upstream wrote out of bounds).
+//  * Transition matrix: explicit range check on the quality index (upstream wrote out of bounds);
+//    qualities are only read when present (upstream dereferenced a NULL quality array).
 #include "output.h"
 
 
@@ -170,10 +171,10 @@ void b_make_transition_by_quality_matrix(B *b, Sub **subs, bool has_quals, int n
         }
         nti0 = (int) (center->seq[pos0] - 1);
         nti1 = (int) (raw->seq[pos1] - 1);
-        qual = raw->qual[pos1]; // qual=unsigned int
         // And record these counts
         t_ij = (4*nti0)+nti1;
         if(has_quals) {
+          qual = raw->qual[pos1]; // qual=unsigned int (pydada2: only read when there are quals)
           if((int)qual >= ncol) { dada2_stop("Rounded quality exceeded range of err lookup table."); }
           transMat(t_ij, qual) += raw->reads;
         } else { 

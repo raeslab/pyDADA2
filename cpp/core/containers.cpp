@@ -3,6 +3,7 @@
 //
 // Changes for pydada2:
 //  * Rcpp::stop -> dada2_stop.
+//  * bi_new value-initialises the Bi (new Bi()), so fields that are not set explicitly are 0.
 
 #include "dada.h"
 
@@ -54,7 +55,7 @@ void raw_free(Raw *raw) {
 
 // The constructor for the Bi object.
 Bi *bi_new(unsigned int totraw) {
-  Bi *bi = new Bi;
+  Bi *bi = new Bi(); // value-initialised (upstream: indeterminate POD members)
   if (bi == NULL)  dada2_stop("Memory allocation failed!\n");
   bi->raw = (Raw **) malloc(RAWBUF * sizeof(Raw *)); //E
   if (bi->raw == NULL)  dada2_stop("Memory allocation failed.");
@@ -95,6 +96,8 @@ B *b_new(Raw **raws, unsigned int nraw, double omegaA, double omegaP, bool use_q
   b->omegaA = omegaA;
   b->omegaP = omegaP;
   b->use_quals = use_quals;
+  b->cache = NULL;
+  b->lam = NULL;
   
   // Initialize array of raws
   // Remember that these were allocated outside the construction of B

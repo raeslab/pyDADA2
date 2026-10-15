@@ -4,12 +4,16 @@
 // Changes for pydada2:
 //  * Rcpp::ppois(n, lambda, lower.tail=false) -> ppois_upper (stats.h, Boost.Math based).
 //  * Removed the commented-out copy of R's nmath ppois/pgamma (GPL) carried upstream.
-//  * compute_lambda: single thread-safe implementation over an ErrMat view.
+//  * compute_lambda: single thread-safe implementation over an ErrMat view; NaN-safe range check.
+//  * compute_lambda_packed: the same computation from cached (packed) substitutions.
+//  * LambdaTable: per-raw self-transition factors and their running products, so that a lambda
+//    starts from the product up to the first substitution (same multiplications, same order).
 /*
 Pval.cpp contains the functions related to calculating the abundance pval in DADA2.
 */
 
 #include "dada.h"
+#include "parallel.h"
 #include "stats.h"
 
 
@@ -147,7 +151,147 @@ double compute_lambda(Raw *raw, Sub *sub, const ErrMat &errMat, bool use_quals) 
     lambda = lambda * err_mat[tvec[pos1]*ncol+qind[pos1]];
   }
   
-  if(lambda < 0 || lambda > 1) { dada2_stop("Bad lambda."); }
+  if(!(lambda >= 0 && lambda <= 1)) { dada2_stop("Bad lambda."); } // NaN-safe
   
+  return lambda;
+}
+
+// pydada2: compute_lambda for substitutions packed as (pos1 << 16 | nti0*4+nti1) (comparison
+// cache). Same checks, same transition vector and the same product order as compute_lambda.
+double compute_lambda_packed(Raw *raw, const uint32_t *subs, unsigned int nsubs, const ErrMat &errMat, bool use_quals) {
+  const unsigned int ncol = errMat.ncol;
+  const double *err_mat = errMat.data;
+  int pos1, nti1, len1;
+  unsigned int s;
+  double lambda;
+  unsigned int tvec[SEQLEN];
+  unsigned int qind[SEQLEN];
+
+  len1 = raw->length;
+  for(pos1=0;pos1<len1;pos1++) {
+    nti1 = ((int) raw->seq[pos1]) - 1;
+    if(nti1 == 0 || nti1 == 1 || nti1 == 2 || nti1 == 3) {
+      tvec[pos1] = nti1*4 + nti1;
+    } else {
+      dada2_stop("Non-ACGT sequences in compute_lambda.");
+    }
+    if(use_quals) {
+      qind[pos1] = raw->qual[pos1];
+    } else {
+      qind[pos1] = 0;
+    }
+    if( qind[pos1] > (ncol-1) ) {
+      dada2_stop("Rounded quality exceeded range of err lookup table.");
+    }
+  }
+  for(s=0;s<nsubs;s++) {
+    pos1 = (int)(subs[s] >> 16);
+    if(pos1 >= len1) { dada2_stop("CL: Bad pos1: %i (len1=%i).", pos1, len1); }
+    tvec[pos1] = subs[s] & 0xFFFF;
+  }
+  lambda = 1.0;
+  for(pos1=0;pos1<len1;pos1++) {
+    lambda = lambda * err_mat[tvec[pos1]*ncol+qind[pos1]];
+  }
+  if(!(lambda >= 0 && lambda <= 1)) { dada2_stop("Bad lambda."); } // NaN-safe
+  return lambda;
+}
+
+void lambda_table_init(LambdaTable &lt, Raw **raws, unsigned int nraw, unsigned int maxlen, const ErrMat &errMat, bool use_quals, int n_threads) {
+  const unsigned int ncol = errMat.ncol;
+  lt.stride = (size_t)maxlen + 1;
+  lt.err = errMat.data;
+  lt.ncol = ncol;
+  lt.use_quals = use_quals;
+  lt.fac.assign((size_t)nraw * lt.stride, 0.0);
+  lt.prod.assign((size_t)nraw * lt.stride, 0.0);
+  dada2::parallel_for(0, nraw, [&](std::size_t begin, std::size_t end) {
+    for(std::size_t r=begin;r<end;r++) {
+      Raw *raw = raws[r];
+      double *fac = &lt.fac[r * lt.stride];
+      double *prod = &lt.prod[r * lt.stride];
+      double lambda = 1.0;
+      prod[0] = lambda;
+      for(unsigned int pos1=0;pos1<raw->length;pos1++) {
+        int nti1 = ((int) raw->seq[pos1]) - 1;
+        if(!(nti1 == 0 || nti1 == 1 || nti1 == 2 || nti1 == 3)) {
+          dada2_stop("Non-ACGT sequences in compute_lambda.");
+        }
+        unsigned int q = use_quals ? raw->qual[pos1] : 0;
+        if(q > (ncol-1)) {
+          dada2_stop("Rounded quality exceeded range of err lookup table.");
+        }
+        fac[pos1] = lt.err[(nti1*4 + nti1)*ncol + q];
+        lambda = lambda * fac[pos1];
+        prod[pos1+1] = lambda;
+      }
+    }
+  }, 64, n_threads);
+}
+
+namespace {
+
+// lambda from the first substitution on; subs sorted by position (pos1 strictly increasing).
+template <typename SubAt>
+double lambda_from(const LambdaTable &lt, Raw *raw, unsigned int nsubs, SubAt sub_at) {
+  const int len1 = raw->length;
+  const size_t r = raw->index;
+  const double *fac = &lt.fac[r * lt.stride];
+  if(nsubs == 0) { return lt.prod[r * lt.stride + len1]; }
+  unsigned int s = 0, pos1_s, t_s;
+  sub_at(0, pos1_s, t_s);
+  double lambda = lt.prod[r * lt.stride + pos1_s];
+  for(int pos1=(int)pos1_s;pos1<len1;pos1++) {
+    double f;
+    if(s < nsubs && (unsigned int)pos1 == pos1_s) {
+      unsigned int q = lt.use_quals ? raw->qual[pos1] : 0;
+      f = lt.err[t_s*lt.ncol + q];
+      if(++s < nsubs) { sub_at(s, pos1_s, t_s); }
+    } else {
+      f = fac[pos1];
+    }
+    lambda = lambda * f;
+  }
+  return lambda;
+}
+
+}  // namespace
+
+double compute_lambda_tab(const LambdaTable &lt, Raw *raw, Sub *sub) {
+  if(!sub) { // NULL Sub, outside Kmer threshold
+    return 0.0;
+  }
+  const int len1 = raw->length;
+  unsigned int prev = 0;
+  for(int s=0;s<(int)sub->nsubs;s++) {  // the checks of compute_lambda
+    int pos0 = sub->pos[s];
+    if(pos0 < 0 || pos0 >= (int)sub->len0) { dada2_stop("CL: Bad pos0: %i (len0=%i).", pos0, sub->len0); }
+    int pos1 = sub->map[sub->pos[s]];
+    if(pos1 < 0 || pos1 >= len1) { dada2_stop("CL: Bad pos1: %i (len1=%i).", pos1, len1); }
+    if(s > 0 && (unsigned int)pos1 <= prev) { return compute_lambda(raw, sub, ErrMat{lt.err, lt.ncol}, lt.use_quals); }
+    prev = pos1;
+  }
+  double lambda = lambda_from(lt, raw, sub->nsubs, [&](unsigned int s, unsigned int &pos1, unsigned int &t) {
+    pos1 = sub->map[sub->pos[s]];
+    t = (unsigned int)((((int) sub->nt0[s]) - 1)*4 + (((int) sub->nt1[s]) - 1));
+  });
+  if(!(lambda >= 0 && lambda <= 1)) { dada2_stop("Bad lambda."); } // NaN-safe
+  return lambda;
+}
+
+double compute_lambda_tab_packed(const LambdaTable &lt, Raw *raw, const uint32_t *subs, unsigned int nsubs) {
+  const int len1 = raw->length;
+  unsigned int prev = 0;
+  for(unsigned int s=0;s<nsubs;s++) {
+    unsigned int pos1 = subs[s] >> 16;
+    if((int)pos1 >= len1) { dada2_stop("CL: Bad pos1: %i (len1=%i).", (int)pos1, len1); }
+    if(s > 0 && pos1 <= prev) { return compute_lambda_packed(raw, subs, nsubs, ErrMat{lt.err, lt.ncol}, lt.use_quals); }
+    prev = pos1;
+  }
+  double lambda = lambda_from(lt, raw, nsubs, [&](unsigned int s, unsigned int &pos1, unsigned int &t) {
+    pos1 = subs[s] >> 16;
+    t = subs[s] & 0xFFFF;
+  });
+  if(!(lambda >= 0 && lambda <= 1)) { dada2_stop("Bad lambda."); } // NaN-safe
   return lambda;
 }

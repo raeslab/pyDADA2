@@ -3,6 +3,9 @@
 // ::isShift, ::isShiftedPair, R/misc.R::nwhamming
 // (https://github.com/benjjneb/dada2, commit b61fe2e, v1.36.0).
 // Copyright (C) Benjamin Callahan et al. Licensed under the LGPL (see LICENSE).
+//
+// collapse_no_mismatch precomputes the min_overlap prefixes once; its candidate blocks run on the
+// shared thread pool (no thread creation per block).
 
 #include <algorithm>
 
@@ -37,16 +40,21 @@ std::vector<int> collapse_no_mismatch(const std::vector<std::string> &seqs, int 
   const size_t n = seqs.size();
   std::vector<int> target(n, -1);
   std::vector<int> out;  // indices of kept sequences, in the order they were added
-  auto prefix = [&](const std::string &s) { return s.substr(0, std::min<size_t>(s.size(), std::max(min_overlap, 0))); };
+  // Prefixes of min_overlap characters (computed once, not once per pair).
+  std::vector<std::string> prefixes(n);
+  for (size_t q = 0; q < n; ++q) {
+    prefixes[q] = seqs[q].substr(0, std::min<size_t>(seqs[q].size(), std::max(min_overlap, 0)));
+  }
   const size_t block = static_cast<size_t>(std::max(1, n_threads)) * 4;
+  std::vector<int> cand;
   for (size_t q = 0; q < n; ++q) {
     const std::string &query = seqs[q];
-    const std::string pq = prefix(query);
+    const std::string &pq = prefixes[q];
     // Prescreen (cheap): refs sharing a prefix substring, in insertion order.
-    std::vector<int> cand;
+    cand.clear();
     for (int ref : out) {
       const std::string &rs = seqs[ref];
-      if (rs.find(pq) != std::string::npos || query.find(prefix(rs)) != std::string::npos) {
+      if (rs.find(pq) != std::string::npos || query.find(prefixes[ref]) != std::string::npos) {
         cand.push_back(ref);
       }
     }

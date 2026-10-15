@@ -7,6 +7,8 @@
 //  * Rcpp::NumericMatrix error matrices replaced by ErrMat (row-major 16 x ncol view).
 //  * R-object output builders (error.cpp) return plain structs (see output.h).
 //  * X64/SSE2 detection also recognises MSVC (_M_X64).
+//  * B has an optional comparison cache (CompCacheSlot, see dada_main.cpp/cluster.cpp);
+//    raw_align/sub_new can report the k-mer distance.
 
 #ifndef _DADA_H_
 #define _DADA_H_
@@ -132,6 +134,21 @@ typedef struct {
 } Bi;
 
 // B: holds all the clusters. The full clustering (or partition).
+struct CompCacheSlot;  // comparison cache of one sample (dada_main.cpp)
+
+/* pydada2: per-raw factors of lambda for one error matrix. lambda(raw, sub) is the product, in
+   position order, of err(t, q) over the raw's positions, where t is the self-transition except
+   at substitutions. fac[pos] is the self-transition factor and prod[p] the running product of
+   the first p factors (prod[0] = 1), so lambda = prod[first substitution] * (remaining factors
+   in order): the same multiplications in the same order as compute_lambda. */
+struct LambdaTable {
+  std::vector<double> fac, prod;  // nraw x stride
+  size_t stride = 0;              // max length + 1
+  const double *err = NULL;
+  unsigned int ncol = 0;
+  bool use_quals = true;
+};
+
 typedef struct {
   unsigned int nclust;
   unsigned int nraw;
@@ -147,7 +164,25 @@ typedef struct {
   size_t nlam;
   Raw **raw;
   Bi **bi;
+  CompCacheSlot *cache;  // pydada2: optional cache of centre-vs-raw comparisons (NULL: none)
+  const LambdaTable *lam; // pydada2: optional precomputed lambda factors (NULL: none)
 } B;
+
+/* pydada2: cache of the comparisons of one sample, kept across dada_uniques runs. For each centre
+   (raw index) and raw: the k-mer distance and, if the pair was aligned, the substitutions packed as
+   (pos1 << 16 | nti0*4+nti1). */
+#define CACHE_UNKNOWN 0xFFFF   // nsubs: pair not computed yet
+#define CACHE_SCREENED 0xFFFE  // nsubs: pair rejected by the k-mer screen (only kdist known)
+struct CentreCache {
+  std::vector<double> kdist;
+  std::vector<uint16_t> nsubs;
+  std::vector<uint32_t> off;
+  std::vector<uint32_t> subs;
+};
+// Returns the cache of centre `centre` (creating it if the memory budget allows), or NULL.
+CentreCache *cache_centre(CompCacheSlot *slot, unsigned int centre, unsigned int nraw);
+// Reserves `bytes` more of the memory budget; false if that would exceed it.
+bool cache_reserve(CompCacheSlot *slot, size_t bytes);
 
 /* -------------------------------------------
    -------- METHODS METHODS METHODS ----------
@@ -188,9 +223,10 @@ char **nwalign_endsfree_homo(const char *s1, size_t len1, const char *s2, size_t
 char **nwalign_vectorized2(const char *s1, size_t len1, const char *s2, size_t len2, int16_t match, int16_t mismatch, int16_t gap_p, int16_t end_gap_p, int band);
 char **nwalign_gapless(const char *s1, size_t len1, const char *s2, size_t len2);
 char **raw_align(Raw *raw1, Raw *raw2, int match, int mismatch, int gap_p, int homo_gap_p, bool use_kmers,
-                 double kdist_cutoff, int band, bool vectorized_alignment, int SSE, bool gapless);
+                 double kdist_cutoff, int band, bool vectorized_alignment, int SSE, bool gapless,
+                 double *kdist_out = NULL);
 Sub *sub_new(Raw *raw0, Raw *raw1, int match, int mismatch, int gap_p, int homo_gap_p, bool use_kmers, double kdist_cutoff,
-             int band, bool vectorized_alignment, int SSE, bool gapless);
+             int band, bool vectorized_alignment, int SSE, bool gapless, double *kdist_out = NULL);
 Sub *al2subs(char **al);
 Sub *sub_copy(Sub *sub);
 void sub_free(Sub *sub);
@@ -211,6 +247,13 @@ void b_p_update(B *b, bool greedy, bool detect_singletons);
 double calc_pA(int reads, double E_reads, bool prior);
 double get_pA(Raw *raw, Bi *bi, bool detect_singletons);
 double compute_lambda(Raw *raw, Sub *sub, const ErrMat &errMat, bool use_quals);
+// compute_lambda from packed substitutions (pos1 << 16 | nti0*4+nti1), same result.
+double compute_lambda_packed(Raw *raw, const uint32_t *subs, unsigned int nsubs, const ErrMat &errMat, bool use_quals);
+// Fill a LambdaTable for the raws (validates sequences and quality range like compute_lambda).
+void lambda_table_init(LambdaTable &lt, Raw **raws, unsigned int nraw, unsigned int maxlen, const ErrMat &errMat, bool use_quals, int n_threads);
+// compute_lambda(raw, sub) / compute_lambda_packed using the table; same results.
+double compute_lambda_tab(const LambdaTable &lt, Raw *raw, Sub *sub);
+double compute_lambda_tab_packed(const LambdaTable &lt, Raw *raw, const uint32_t *subs, unsigned int nsubs);
 double get_self(char *seq, double err[4][4]);
 
 // methods implemented in chimera.cpp (internal helpers)
