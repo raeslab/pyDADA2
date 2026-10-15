@@ -87,3 +87,4 @@ Thumbs.db
 ## Benchmarks (raw results)
 benchmarks/micro/results_*.json
 benchmarks/dataset/data/
+benchmarks/dataset/results/

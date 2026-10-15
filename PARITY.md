@@ -39,5 +39,9 @@ Thread-count independence (1 vs 2/4 threads) is tested for `dada_uniques`, DADA 
 `table_bimera`, `collapse_no_mismatch`, `filter_and_trim` and taxonomy. Memory safety is checked
 with AddressSanitizer/LeakSanitizer (`scripts/asan_check.sh`): no errors, no leaks in the C++ code.
 
+Phase 11 repeats the comparison on the full MiSeq SOP dataset with SILVA 138.2
+(`benchmarks/dataset/REPORT.md`). All exact outputs are identical, error rates agree to rel 1.4e-14,
+and taxonomy meets the §8.3 criterion (229/232 ASVs identical; the other 3 are borderline calls).
+
 Performance on the same data: see `benchmarks/micro/REPORT.md`. Every stage is as fast as R or
 faster, so no stage exceeds the 1.5x budget.

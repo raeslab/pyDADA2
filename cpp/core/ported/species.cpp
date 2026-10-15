@@ -6,8 +6,12 @@
 //
 // Instead of a PDict per batch of equal-length queries, each distinct query length L is handled
 // with a hash table of the queries and one pass over all length-L windows of every reference.
+// Windows are hashed with a rolling (Rabin-Karp) hash, so each pass is O(reference length);
+// every hash hit is confirmed with memcmp, so the matches are exact.
 
 #include <algorithm>
+#include <cstdint>
+#include <cstring>
 #include <unordered_map>
 
 #include "../dada.h"
@@ -52,23 +56,70 @@ std::vector<std::vector<int>> species_hits(const std::vector<std::string> &queri
     rcs.reserve(nr);
     for (const auto &r : refs) rcs.push_back(rc_acgt(r));
   }
-  // group queries by length
-  std::unordered_map<size_t, std::unordered_map<std::string, std::vector<int>>> by_len;
-  for (size_t i = 0; i < nq; ++i) by_len[queries[i].size()][queries[i]].push_back(static_cast<int>(i));
+  // Group the distinct queries by length: rolling hash of each -> (query text, query indices).
+  constexpr uint64_t B = 1099511628211ULL;  // odd multiplier, arithmetic mod 2^64
+  auto hash = [](const char *p, size_t n) {
+    uint64_t h = 0;
+    for (size_t i = 0; i < n; ++i) h = h * B + static_cast<unsigned char>(p[i]);
+    return h;
+  };
+  struct Query {
+    const std::string *seq;
+    std::vector<int> idx;
+  };
+  struct LenGroup {
+    size_t len;
+    uint64_t pow;  // B^(len-1), to drop the leading character
+    std::unordered_map<uint64_t, std::vector<Query>> tab;
+    std::vector<uint64_t> filter;  // bitmap of hash bits, rejects most windows before tab.find
+  };
+  constexpr unsigned FILTER_BITS = 20;
+  auto filter_slot = [](uint64_t h) { return h >> (64 - FILTER_BITS); };
+  std::vector<LenGroup> groups;
+  {
+    std::unordered_map<size_t, size_t> gi;
+    for (size_t i = 0; i < nq; ++i) {
+      const std::string &q = queries[i];
+      if (q.empty()) continue;
+      auto ins = gi.emplace(q.size(), groups.size());
+      if (ins.second) {
+        uint64_t pw = 1;
+        for (size_t k = 1; k < q.size(); ++k) pw *= B;
+        groups.push_back({q.size(), pw, {}, std::vector<uint64_t>(1u << (FILTER_BITS - 6))});
+      }
+      LenGroup &g = groups[ins.first->second];
+      const uint64_t h = hash(q.data(), q.size());
+      g.filter[filter_slot(h) >> 6] |= uint64_t{1} << (filter_slot(h) & 63);
+      auto &bucket = g.tab[h];
+      auto it = std::find_if(bucket.begin(), bucket.end(),
+                             [&](const Query &x) { return *x.seq == q; });
+      if (it == bucket.end()) bucket.push_back({&q, {static_cast<int>(i)}});
+      else it->idx.push_back(static_cast<int>(i));
+    }
+  }
   std::vector<std::vector<int>> per_ref(nr);
   auto body = [&](size_t b, size_t e) {
     for (size_t r = b; r < e; ++r) {
       std::vector<int> &out = per_ref[r];
-      for (const auto &kv : by_len) {
-        const size_t L = kv.first;
-        if (L == 0) continue;
-        const auto &tab = kv.second;
+      for (const auto &g : groups) {
+        const size_t L = g.len;
         for (int pass = 0; pass < (try_rc ? 2 : 1); ++pass) {
           const std::string &s = pass == 0 ? refs[r] : rcs[r];
           if (s.size() < L) continue;
-          for (size_t p = 0; p + L <= s.size(); ++p) {
-            auto it = tab.find(s.substr(p, L));
-            if (it != tab.end()) out.insert(out.end(), it->second.begin(), it->second.end());
+          const char *d = s.data();
+          uint64_t h = hash(d, L);
+          for (size_t p = 0;; ++p) {
+            const uint64_t slot = filter_slot(h);
+            if (g.filter[slot >> 6] >> (slot & 63) & 1) {
+              auto it = g.tab.find(h);
+              if (it != g.tab.end())
+                for (const auto &q : it->second)
+                  if (std::memcmp(q.seq->data(), d + p, L) == 0)
+                    out.insert(out.end(), q.idx.begin(), q.idx.end());
+            }
+            if (p + L >= s.size()) break;
+            h = (h - static_cast<unsigned char>(d[p]) * g.pow) * B +
+                static_cast<unsigned char>(d[p + L]);
           }
         }
       }

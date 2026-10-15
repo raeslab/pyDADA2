@@ -9,7 +9,8 @@ through a Pythonic, scikit-learn-style API.
 * Upstream: <https://github.com/benjjneb/dada2> (the algorithms and their C++ implementation)
 * License: LGPL (see `LICENSE`), as the upstream code it derives from
 
-Results are validated against R dada2 1.36 on the bundled example data. Filtering, dereplication,
+Results are validated against R dada2 1.36 on the bundled example data and on the full MiSeq SOP
+dataset (see [Benchmark](#benchmark-pydada2-vs-r-dada2)). Filtering, dereplication,
 denoising, merging, sequence tables and chimera removal give identical results. Known
 differences are listed in [`DEVIATIONS.md`](DEVIATIONS.md); for example, taxonomy bootstrap
 values differ by random-number noise only.
@@ -87,6 +88,52 @@ means NA in integer arrays. Estimators follow scikit-learn conventions: paramete
 | `rc`, `seqComplexity`, `isPhiX` | `reverse_complement`, `seq_complexity`, `is_phix` |
 | `getSequences`, `getUniques`, `uniquesToFasta` | `get_sequences`, `get_uniques`, `uniques_to_fasta` |
 | `plotQualityProfile`, `plotErrors`, `plotComplexity` | `pydada2.plotting.plot_quality_profile`, `plot_errors`, `plot_complexity` |
+
+## Benchmark: pydada2 vs R dada2
+
+Both tools ran the full [DADA2 tutorial](https://benjjneb.github.io/dada2/tutorial.html)
+pipeline with identical parameters on the MiSeq SOP dataset (20 samples, 16S V4, 2x250,
+152,360 read pairs), with SILVA 138.2 for taxonomy. Each configuration ran 3 times in a fresh
+process on an Intel Core Ultra 7 265H (Linux), with R 4.6.1 / dada2 1.36.0 and Python 3.13 /
+pydada2 0.1.0. Full report: [`benchmarks/dataset/REPORT.md`](benchmarks/dataset/REPORT.md).
+
+**Results are identical.** These outputs match R exactly: the read-tracking table (input,
+filtered, denoised F/R, merged, non-chimeric reads per sample), the denoised ASVs and their
+abundances, the merged pairs, the sequence table (232 non-chimeric ASVs, same order and
+counts) and the chimera calls. Learned error rates agree to a relative 1.4e-14. Every run of
+either tool, at 1 or 8 threads, gives the same output.
+
+Taxonomy uses a different random-number generator for the bootstrap (by design, see
+[`DEVIATIONS.md`](DEVIATIONS.md)). 229 of 232 ASVs get the same assignment at every level,
+including species. The other 3 differ at genus or family level, where R's bootstrap was 45–48,
+right at the `min_boot=50` cutoff. Bootstrap confidences differ by a median of 0 and a
+maximum of 14, all within binomial noise.
+
+**pydada2 is 1.7–1.8x faster and uses 35 % less memory** (median wall time per stage):
+
+| stage | R, 1 thread | pydada2, 1 thread | R, 8 threads | pydada2, 8 threads |
+|---|---|---|---|---|
+| filter_and_trim | 17.8 s | 7.0 s | 5.6 s | 1.6 s |
+| learn_errors (F + R) | 105.0 s | 68.3 s | 31.0 s | 21.0 s |
+| derep_fastq (F + R) | 3.3 s | 0.8 s | 3.4 s | 0.8 s |
+| dada (F + R) | 17.5 s | 11.8 s | 4.3 s | 3.5 s |
+| merge_pairs | 1.0 s | 0.7 s | 1.0 s | 0.7 s |
+| remove_bimera_denovo | 0.27 s | 0.18 s | 0.04 s | 0.03 s |
+| assign_taxonomy (SILVA) | 84.1 s | 58.4 s | 75.8 s | 48.6 s |
+| add_species (SILVA) | 21.1 s | 4.9 s | 20.9 s | 2.2 s |
+| **total** | **4.2 min** | **2.5 min** | **2.4 min** | **78 s** |
+| peak memory (RSS) | 4.4 GiB | 2.9 GiB | 4.4 GiB | 3.0 GiB |
+
+To reproduce (needs R with dada2 1.36; downloads about 250 MB into `benchmarks/dataset/data/`):
+
+```bash
+benchmarks/dataset/download.sh                       # MiSeq SOP + SILVA 138.2, SHA-256 checked
+uv run python benchmarks/dataset/run.py 3 1 8        # 3 repeats x {1, 8} threads x {R, pydada2}
+uv run python benchmarks/dataset/report.py           # compare outputs, write REPORT.md
+```
+
+Per-function micro-benchmarks on the small bundled example data are in
+[`benchmarks/micro/REPORT.md`](benchmarks/micro/REPORT.md).
 
 ## Status
 

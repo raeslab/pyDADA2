@@ -15,7 +15,7 @@ rm -rf "$WORK/pkg" && mkdir -p "$WORK/pkg"
 cp -r src/pydada2 "$WORK/pkg/" && cp build/asan/_core*.so "$WORK/pkg/pydada2/"
 if [ ! -x "$WORK/venv/bin/python" ]; then
   uv venv -q "$WORK/venv" --python "$("$PY" -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')"
-  VIRTUAL_ENV="$WORK/venv" uv pip install -q numpy pandas dnaio pytest hypothesis scikit-learn scikit-misc
+  VIRTUAL_ENV="$WORK/venv" uv pip install -q numpy pandas dnaio pytest hypothesis scikit-learn scikit-misc matplotlib
 fi
 PRELOAD="$(gcc -print-file-name=libasan.so) $(gcc -print-file-name=libstdc++.so)"
 LOG="$WORK/lsan.log"

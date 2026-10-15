@@ -44,6 +44,8 @@ uv run ruff format . && uv run ruff check . && uv run mypy src     # gates (spec
 uv sync --all-groups --reinstall-package pydada2   # after deleting build/ (editable hook needs it)
 Rscript benchmarks/micro/run_r.R 7 /tmp/r.json && uv run python benchmarks/micro/run_py.py 7 /tmp/py.json \
   && uv run python benchmarks/micro/report.py /tmp/r.json /tmp/py.json   # micro-benchmarks
+benchmarks/dataset/download.sh && uv run python benchmarks/dataset/run.py 3 1 8 \
+  && uv run python benchmarks/dataset/report.py           # phase 11 MiSeq SOP benchmark (~1 h)
 uv build --no-build-isolation --python "$UV_PROJECT_ENVIRONMENT/bin/python"   # sdist + wheel
 ```
 
@@ -134,6 +136,21 @@ Build notes:
 - Plot functions return matplotlib Figures; data helpers (`quality_profile_stats`,
   `error_plot_data`) are tested exactly against R's plotQualityProfile summary.
 
+## Phase 11 decisions
+
+- Dataset agreed with the human: MiSeq SOP (20 samples) + SILVA 138.2 (toGenus trainset +
+  assignSpecies, Zenodo 14169026); 1 and 8 threads; 3 repeats; spec §9.2 acceptance criteria.
+- `pipeline.R`/`pipeline.py` time each stage in-process and dump all compared outputs to
+  `results/<tool>_t<thr>_r<rep>/results.json`; `run.py` adds wall time + peak RSS (`wait4`
+  rusage, includes R's forked `mclapply` workers; no `/usr/bin/time` in the container).
+  Chimeras are timed via `isBimeraDenovoTable` (= `removeBimeraDenovo(method="consensus")`).
+- Outcome: all exact outputs identical; error rates rel 1.4e-14; taxonomy 229/232 identical at
+  every level, the 3 differences have R bootstrap 45–48. R-vs-R taxonomy was identical here.
+- `species_hits` (K8) was 3x slower than R on SILVA (`substr` + full-string hash per window):
+  now a rolling hash + bitmap pre-filter + memcmp verification, 18x faster, identical hits.
+- `scripts/asan_check.sh` venv now installs matplotlib (needed since the phase-9 plotting tests;
+  delete `/tmp/pydada2-asan/venv` to recreate an old one).
+
 ## Gotchas found so far
 
 - R partial argument matching: a helper with a `name` formal swallowed `n = 300`
@@ -181,4 +198,5 @@ Fresh-history setup (human, once): `git switch --orphan pydada2-main`, then
 - phase 8: TaxonomyClassifier/assign_taxonomy (fit-once model), SpeciesAssigner/assign_species (K8), add_species
 - phase 9: plotting (+ exact quality-profile stats), align module, README, CITATION.cff, e2e test, abi3 wheel fix
 - phase 10: PARITY.md sign-off, micro-benchmarks (benchmarks/micro: run_r.R, run_py.py, report.py, REPORT.md)
+- phase 11: MiSeq SOP + SILVA 138.2 benchmark vs R (benchmarks/dataset), faster species matching, README benchmark section
 
