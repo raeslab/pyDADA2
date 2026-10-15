@@ -3,8 +3,10 @@
 #
 #   * MiSeq SOP (Kozich et al. 2013): 20 samples (19 mice + mock), 16S V4, MiSeq 2x250
 #   * SILVA 138.2 DADA2-formatted training set + species set (Zenodo 14169026)
+#   * with --stability: the full Kozich et al. 2013 mouse "Stability" data set that MiSeq SOP is
+#     a subset of (362 samples, 3.65 M read pairs, 845 MB) into data/Stability/
 #
-# Every file is SHA-256 checked. Usage: benchmarks/dataset/download.sh
+# Every file is SHA-256 checked. Usage: benchmarks/dataset/download.sh [--stability]
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 data="$here/data"
@@ -32,3 +34,12 @@ if [[ ! -d MiSeq_SOP ]]; then
   rm -rf __MACOSX
 fi
 echo "FASTQ files: $(ls MiSeq_SOP/*_R1_001.fastq | wc -l) forward, $(ls MiSeq_SOP/*_R2_001.fastq | wc -l) reverse"
+
+if [[ "${1:-}" == "--stability" ]]; then
+  fetch https://mothur.s3.us-east-2.amazonaws.com/data/MiSeqDevelopmentData/StabilityNoMetaG.tar \
+    StabilityNoMetaG.tar bbbe46cef5f2bed3030aca68d1557b35240c503427d6a28a582a2a121e5777ba
+  if [[ ! -d Stability ]]; then
+    mkdir Stability.part && tar -xf StabilityNoMetaG.tar -C Stability.part && mv Stability.part Stability
+  fi
+  echo "Stability: $(ls Stability/*_R1_001.fastq.gz | wc -l) forward, $(ls Stability/*_R2_001.fastq.gz | wc -l) reverse"
+fi

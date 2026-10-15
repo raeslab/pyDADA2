@@ -1,6 +1,9 @@
 """DADA2 tutorial pipeline on the MiSeq SOP data with pydada2 (spec §9.2, phase 11).
 
-Usage: python benchmarks/dataset/pipeline.py <threads> <outdir> [datadir]
+Usage: python benchmarks/dataset/pipeline.py <threads> <outdir> [datadir] [fastq_subdir]
+
+fastq_subdir defaults to MiSeq_SOP; files ending in _R1_001.fastq(.gz) / _R2_001.fastq(.gz) are
+used. Samples with no reads left after filtering are dropped (neither tool writes their files).
 
 Mirrors benchmarks/dataset/pipeline.R stage by stage, with the same parameters. Writes
 <outdir>/results.json in the same layout (indices 1-based, matrices row-major, NA as null).
@@ -10,6 +13,7 @@ from __future__ import annotations
 
 import json
 import platform
+import re
 import sys
 import time
 import warnings
@@ -37,9 +41,9 @@ def main() -> None:
         times[name] = time.perf_counter() - t0
         return val
 
-    sop = data / "MiSeq_SOP"
-    fn_fs = sorted(sop.glob("*_R1_001.fastq"))
-    fn_rs = sorted(sop.glob("*_R2_001.fastq"))
+    sop = data / (sys.argv[4] if len(sys.argv) > 4 else "MiSeq_SOP")
+    fn_fs = sorted(p for p in sop.iterdir() if re.search(r"_R1_001\.fastq(\.gz)?$", p.name))
+    fn_rs = sorted(p for p in sop.iterdir() if re.search(r"_R2_001\.fastq(\.gz)?$", p.name))
     samples = [p.name.split("_")[0] for p in fn_fs]
     filt_fs = [out / "filtered" / f"{s}_F_filt.fastq.gz" for s in samples]
     filt_rs = [out / "filtered" / f"{s}_R_filt.fastq.gz" for s in samples]
@@ -52,6 +56,11 @@ def main() -> None:
             trunc_q=2, rm_phix=True, compress=True, n_jobs=threads,
         ),
     )  # fmt: skip
+    # Neither tool writes the files of samples without reads left: drop those samples.
+    keep = (stats["reads_out"] > 0).tolist()
+    samples = [s for s, k in zip(samples, keep, strict=True) if k]
+    filt_fs = [f for f, k in zip(filt_fs, keep, strict=True) if k]
+    filt_rs = [f for f, k in zip(filt_rs, keep, strict=True) if k]
     err_f = stage("learn_errors_F", lambda: dada2.learn_errors(filt_fs, n_jobs=threads))
     err_r = stage("learn_errors_R", lambda: dada2.learn_errors(filt_rs, n_jobs=threads))
     drp_f = stage("derep_F", lambda: dict(zip(samples, dada2.derep_fastq(filt_fs), strict=True)))
