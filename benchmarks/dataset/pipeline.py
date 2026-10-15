@@ -69,7 +69,9 @@ def main() -> None:
     dd_r = stage("dada_R", lambda: dada2.DADA(err=err_r.err_, n_jobs=threads).fit(drp_r))
     mergers = stage(
         "merge_pairs",
-        lambda: dada2.merge_pairs(dd_f, list(drp_f.values()), dd_r, list(drp_r.values())),
+        lambda: dada2.merge_pairs(
+            dd_f, list(drp_f.values()), dd_r, list(drp_r.values()), n_jobs=threads
+        ),
     )
     seqtab = stage(
         "make_sequence_table",
