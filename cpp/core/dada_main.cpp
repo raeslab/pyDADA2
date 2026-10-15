@@ -17,7 +17,17 @@
 //  * Raw construction and the k-mer passes run in parallel over raws; the final substitutions
 //    are computed in parallel over raws instead of clusters (cluster 0 holds most raws). Each
 //    raw writes only its own slots, so the results do not depend on n_threads.
+//  * Optional comparison cache across calls (AlignmentCache) and dada_uniques_batch, which runs
+//    several samples concurrently on the shared thread pool.
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
+#include <thread>
+#include <tuple>
+#include <unordered_map>
 
 #include "api.h"
 #include "dada.h"
@@ -51,7 +61,98 @@ struct DadaState {
 
 }  // namespace
 
+/********** COMPARISON CACHE *********/
+
+// Alignment parameters that determine the cached comparisons (the k-mer cutoff is re-applied to
+// the cached distances; qualities and error rates only enter lambda, which is recomputed).
+struct CacheParams {
+  int match, mismatch, gap, homo_gap, band_size, sse;
+  bool use_kmers, vectorized_alignment, gapless;
+  bool operator==(const CacheParams &o) const {
+    return std::tie(match, mismatch, gap, homo_gap, band_size, sse, use_kmers, vectorized_alignment, gapless) ==
+           std::tie(o.match, o.mismatch, o.gap, o.homo_gap, o.band_size, o.sse, o.use_kmers, o.vectorized_alignment, o.gapless);
+  }
+};
+
+struct CompCacheSlot {
+  dada2::AlignmentCache::Impl *owner = nullptr;
+  bool valid = false;
+  CacheParams params{};
+  std::vector<std::string> seqs;  // the sample the slot belongs to (compared exactly)
+  std::unordered_map<unsigned int, std::unique_ptr<CentreCache>> centres;
+  size_t bytes = 0;               // budget used by this slot
+};
+
+struct dada2::AlignmentCache::Impl {
+  std::vector<CompCacheSlot> slots;
+  size_t budget = 0;
+  std::atomic<size_t> used{0};
+};
+
+bool cache_reserve(CompCacheSlot *slot, size_t bytes) {
+  auto &used = slot->owner->used;
+  size_t cur = used.load();
+  do {
+    if(cur + bytes > slot->owner->budget) { return false; }
+  } while(!used.compare_exchange_weak(cur, cur + bytes));
+  slot->bytes += bytes;
+  return true;
+}
+
+CentreCache *cache_centre(CompCacheSlot *slot, unsigned int centre, unsigned int nraw) {
+  auto it = slot->centres.find(centre);
+  if(it != slot->centres.end()) { return it->second.get(); }
+  if(!cache_reserve(slot, (size_t)nraw * (sizeof(double) + sizeof(uint16_t) + sizeof(uint32_t)) + 128)) { return NULL; }
+  auto cc = std::make_unique<CentreCache>();
+  cc->kdist.assign(nraw, 0.0);
+  cc->nsubs.assign(nraw, CACHE_UNKNOWN);
+  cc->off.assign(nraw, 0);
+  CentreCache *ptr = cc.get();
+  slot->centres.emplace(centre, std::move(cc));
+  return ptr;
+}
+
+namespace {
+
+void slot_reset(CompCacheSlot &slot) {
+  slot.owner->used.fetch_sub(slot.bytes);
+  slot.bytes = 0;
+  slot.centres.clear();
+  slot.seqs.clear();
+  slot.valid = false;
+}
+
+// The slot for this sample and these parameters (reset if it held another sample), or NULL if
+// the sample does not fit in the budget.
+CompCacheSlot *slot_for(dada2::AlignmentCache *cache, size_t index, const std::vector<std::string> &seqs, const CacheParams &params) {
+  if(!cache) { return NULL; }
+  auto &impl = cache->impl();
+  if(index >= impl.slots.size()) { dada2_stop_invalid("Alignment cache slot out of range."); }
+  CompCacheSlot &slot = impl.slots[index];
+  if(slot.valid && slot.params == params && slot.seqs == seqs) { return &slot; }
+  slot_reset(slot);
+  size_t bytes = 0;
+  for(const auto &sq : seqs) { bytes += sq.size() + sizeof(std::string); }
+  if(!cache_reserve(&slot, bytes)) { return NULL; }
+  slot.seqs = seqs;
+  slot.params = params;
+  slot.valid = true;
+  return &slot;
+}
+
+}  // namespace
+
 namespace dada2 {
+
+AlignmentCache::AlignmentCache(size_t n_slots, size_t budget_bytes) : impl_(std::make_unique<Impl>()) {
+  impl_->budget = budget_bytes;
+  impl_->slots.resize(n_slots);
+  for(auto &slot : impl_->slots) { slot.owner = impl_.get(); }
+}
+AlignmentCache::~AlignmentCache() = default;
+size_t AlignmentCache::n_slots() const { return impl_->slots.size(); }
+size_t AlignmentCache::budget_bytes() const { return impl_->budget; }
+size_t AlignmentCache::bytes_used() const { return impl_->used.load(); }
 
 //------------------------------------------------------------------
 // C interface to run DADA on the provided unique sequences/abundance pairs (was the Rcpp
@@ -59,7 +160,7 @@ namespace dada2 {
 DadaOutput dada_uniques(const std::vector<std::string> &seqs, const std::vector<int> &abundances,
                         const std::vector<bool> &priors, const double *err, int err_ncol,
                         const double *quals, int quals_ncol, const DadaOptions &opt, int n_threads,
-                        bool verbose) {
+                        bool verbose, AlignmentCache *cache, size_t cache_slot) {
   unsigned int i, r, index, pos, nraw, maxlen, minlen;
   Raw *raw;
   int SSE = opt.sse;
@@ -166,6 +267,7 @@ DadaOutput dada_uniques(const std::vector<std::string> &seqs, const std::vector<
   /********** RUN DADA *********/
   st.bb = b_new(raws, nraw, opt.omega_a, opt.omega_p, opt.use_quals); // New cluster with all sequences in 1 bi
   B *bb = st.bb;
+  bb->cache = slot_for(cache, cache_slot, seqs, CacheParams{match, mismatch, gap, homo_gap, band_size, SSE, use_kmers, vectorized_alignment, gapless});
   run_dada(bb, errMat,
            match, mismatch, gap, homo_gap, use_kmers, opt.kdist_cutoff, band_size,
            opt.detect_singletons, opt.max_clust, opt.min_fold, opt.min_hamming, opt.min_abund,
@@ -236,6 +338,101 @@ DadaOutput dada_uniques(const std::vector<std::string> &seqs, const std::vector<
     }
   }
   // DadaState releases subs, B and raws.
+  return out;
+}
+
+//------------------------------------------------------------------
+// Several samples, run concurrently on the shared pool (see api.h).
+std::vector<DadaOutput> dada_uniques_batch(const std::vector<DadaInput> &samples,
+                                           const DadaOptions &opt, int n_threads,
+                                           int sample_threads, bool verbose,
+                                           AlignmentCache *cache) {
+  const size_t nsam = samples.size();
+  std::vector<DadaOutput> out(nsam);
+  if(nsam == 0) { return out; }
+  if(cache && cache->n_slots() < nsam) { dada2_stop_invalid("Alignment cache has fewer slots than samples."); }
+  for(const auto &in : samples) {
+    if(!in.seqs || !in.abundances || !in.priors) { dada2_stop_invalid("Incomplete sample input."); }
+  }
+  // Largest samples first, so that the last ones to finish are small.
+  std::vector<size_t> order(nsam);
+  for(size_t k=0;k<nsam;k++) { order[k] = k; }
+  std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+    return samples[a].seqs->size() > samples[b].seqs->size();
+  });
+
+  struct Batch {
+    const std::vector<DadaInput> *samples;
+    std::vector<DadaOutput> *out;
+    const std::vector<size_t> *order;
+    const DadaOptions *opt;
+    AlignmentCache *cache;
+    int n_threads;
+    bool verbose;
+    std::thread::id caller;
+    std::atomic<bool> cancel{false};
+    std::mutex m;
+    std::condition_variable cv;
+    size_t next = 0, running = 0;  // guarded by m
+    std::exception_ptr error;      // guarded by m
+    void fail(std::exception_ptr e) {
+      std::lock_guard<std::mutex> lk(m);
+      if(!error) { error = e; }
+      cancel.store(true);
+    }
+  } batch;
+  batch.samples = &samples;
+  batch.out = &out;
+  batch.order = &order;
+  batch.opt = &opt;
+  batch.cache = cache;
+  batch.n_threads = n_threads;
+  batch.verbose = verbose;
+  batch.caller = std::this_thread::get_id();
+
+  auto run = [](void *p) {
+    Batch &bt = *static_cast<Batch *>(p);
+    ScopedCancel cancel_scope(&bt.cancel);
+    for(;;) {
+      size_t s;
+      {
+        std::lock_guard<std::mutex> lk(bt.m);
+        if(bt.cancel.load() || bt.next >= bt.order->size()) { break; }
+        s = (*bt.order)[bt.next++];
+        bt.running++;
+      }
+      try {
+        const DadaInput &in = (*bt.samples)[s];
+        (*bt.out)[s] = dada_uniques(*in.seqs, *in.abundances, *in.priors, in.err, in.err_ncol,
+                                    in.quals, in.quals_ncol, *bt.opt, bt.n_threads, bt.verbose,
+                                    bt.cache, s);
+      } catch(...) {
+        bt.fail(std::current_exception());
+      }
+      {
+        std::lock_guard<std::mutex> lk(bt.m);
+        bt.running--;
+      }
+      bt.cv.notify_all();
+    }
+    if(std::this_thread::get_id() != bt.caller) { return; }
+    // The caller waits for the samples still running on other threads and keeps checking for
+    // interrupts meanwhile (the check needs the caller's handler, e.g. Python signals).
+    std::unique_lock<std::mutex> lk(bt.m);
+    while(bt.running > 0) {
+      if(bt.cv.wait_for(lk, std::chrono::milliseconds(50), [&] { return bt.running == 0; })) { break; }
+      lk.unlock();
+      try {
+        dada2_check_interrupt();
+      } catch(...) {
+        bt.fail(std::current_exception());
+      }
+      lk.lock();
+    }
+  };
+  const size_t workers = std::max<size_t>(1, std::min<size_t>(sample_threads < 1 ? 1 : (size_t)sample_threads, nsam));
+  detail::run_on_pool(run, &batch, std::min(workers, detail::max_threads()) - 1);
+  if(batch.error) { std::rethrow_exception(batch.error); }
   return out;
 }
 

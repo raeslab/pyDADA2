@@ -33,6 +33,9 @@ __all__ = ["DADA", "DadaParams", "DadaResult", "combine_dereps"]
 
 logger = logging.getLogger("pydada2")
 
+# Memory budget of the alignment cache used across the rounds of one fit (all samples).
+_ALIGNMENT_CACHE_BYTES = 1024**3
+
 FloatArray = npt.NDArray[np.float64]
 IntArray = npt.NDArray[np.int64]
 
@@ -496,12 +499,31 @@ class DADA(BaseEstimator):
         errs: list[FloatArray | None] = []
         pseudo_priors: set[str] = set()
         converged = True
+        qmaxes = [_validate_derep(d, i, p.use_quals) for i, d in enumerate(dereps)]
+        seqs_all = [d.sequences for d in dereps]
+        abunds_all = [d.uniques.to_numpy(dtype=np.int64) for d in dereps]
+        for ab in abunds_all:
+            if ab.size and ab.max() > np.iinfo(np.int32).max:
+                raise ValueError("Abundances exceed the supported range (int32).")
+        abund_lists = [ab.tolist() for ab in abunds_all]
+        quals_all = [np.ascontiguousarray(d.quals, dtype=np.float64) for d in dereps]
+        # Several rounds on the same samples (self-consistency, pseudo-pooling): reuse the
+        # alignments (they do not depend on the error rates), within a memory budget.
+        cache = (
+            _core.AlignmentCache(len(dereps), _ALIGNMENT_CACHE_BYTES)
+            if p.use_kmers and (self.self_consistent or pseudo)
+            else None
+        )
+        # Samples run concurrently, each may use all n_jobs threads (one shared pool). Core log
+        # messages only reach the calling thread, so verbose >= 2 runs samples one at a time.
+        sample_threads = 1 if verbose >= 2 else min(n_threads, len(dereps))
         while True:
-            outs: list[dict[str, Any]] = []
             if nconsist > 0:
                 errs.append(err)
+            err_list = []
+            prior_list = []
             for i, d in enumerate(dereps):
-                qmax = _validate_derep(d, i, p.use_quals)
+                qmax = qmaxes[i]
                 if initialize_err:
                     erri = np.ones((16, max(41, qmax + 1)), dtype=np.float64)
                 else:
@@ -530,43 +552,41 @@ class DADA(BaseEstimator):
                         logger.info(
                             "Sample %d - %d reads in %d unique sequences.", i, d.n_reads, len(d)
                         )
-                seqs = d.sequences
-                prior_flags = [(s in priors) or (s in pseudo_priors) for s in seqs]
-                ab = d.uniques.to_numpy(dtype=np.int64)
-                if ab.size and ab.max() > np.iinfo(np.int32).max:
-                    raise ValueError("Abundances exceed the supported range (int32).")
-                res = _core.dada_uniques(
-                    seqs,
-                    ab.tolist(),
-                    prior_flags,
-                    np.ascontiguousarray(erri, dtype=np.float64),
-                    np.ascontiguousarray(d.quals, dtype=np.float64),
-                    match=p.match,
-                    mismatch=p.mismatch,
-                    gap=p.gap_penalty,
-                    use_kmers=p.use_kmers,
-                    kdist_cutoff=p.kdist_cutoff,
-                    band_size=int(p.band_size),
-                    omega_a=p.omega_a,
-                    omega_p=p.omega_p,
-                    omega_c=p.omega_c,
-                    detect_singletons=p.detect_singletons,
-                    max_clust=1 if initialize_err else int(p.max_clust),
-                    min_fold=p.min_fold,
-                    min_hamming=int(p.min_hamming),
-                    min_abund=int(p.min_abundance),
-                    use_quals=True,
-                    final_consensus=False,
-                    vectorized_alignment=p.vectorized_alignment,
-                    homo_gap=homo_gap,
-                    sse=int(p.sse),
-                    gapless=p.gapless,
-                    greedy=p.greedy,
-                    n_threads=n_threads,
-                    verbose=verbose >= 2,
-                    log=core_log,
-                )
-                outs.append(res)
+                err_list.append(np.ascontiguousarray(erri, dtype=np.float64))
+                prior_list.append([(s in priors) or (s in pseudo_priors) for s in seqs_all[i]])
+            outs: list[dict[str, Any]] = _core.dada_uniques_batch(
+                seqs_all,
+                abund_lists,
+                prior_list,
+                err_list,
+                quals_all,
+                match=p.match,
+                mismatch=p.mismatch,
+                gap=p.gap_penalty,
+                use_kmers=p.use_kmers,
+                kdist_cutoff=p.kdist_cutoff,
+                band_size=int(p.band_size),
+                omega_a=p.omega_a,
+                omega_p=p.omega_p,
+                omega_c=p.omega_c,
+                detect_singletons=p.detect_singletons,
+                max_clust=1 if initialize_err else int(p.max_clust),
+                min_fold=p.min_fold,
+                min_hamming=int(p.min_hamming),
+                min_abund=int(p.min_abundance),
+                use_quals=True,
+                final_consensus=False,
+                vectorized_alignment=p.vectorized_alignment,
+                homo_gap=homo_gap,
+                sse=int(p.sse),
+                gapless=p.gapless,
+                greedy=p.greedy,
+                n_threads=n_threads,
+                sample_threads=sample_threads,
+                verbose=verbose >= 2,
+                log=core_log,
+                cache=cache,
+            )
             cur = accumulate_trans([o["trans"] for o in outs])
             try:
                 with warnings.catch_warnings():

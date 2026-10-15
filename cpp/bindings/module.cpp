@@ -227,6 +227,76 @@ NB_MODULE(_core, m) {
       "arrays (clustering columns, birth_subs columns, trans, cluster_quals, map, pval_raw);\n"
       "indices are 0-based, -1/NaN mean NA.");
 
+  nb::class_<dada2::AlignmentCache>(
+      m, "AlignmentCache",
+      "Cache of centre-vs-raw comparisons for repeated dada runs on the same samples (one slot\n"
+      "per sample); comparisons beyond budget_bytes are computed without being cached.")
+      .def(nb::init<size_t, size_t>(), "n_slots"_a, "budget_bytes"_a)
+      .def_prop_ro("n_slots", &dada2::AlignmentCache::n_slots)
+      .def_prop_ro("budget_bytes", &dada2::AlignmentCache::budget_bytes)
+      .def_prop_ro("bytes_used", &dada2::AlignmentCache::bytes_used);
+
+  m.def(
+      "dada_uniques_batch",
+      [](const std::vector<std::vector<std::string>> &seqs,
+         const std::vector<std::vector<int>> &abundances,
+         const std::vector<std::vector<bool>> &priors, const std::vector<CArray<double>> &errs,
+         const std::vector<std::optional<CArray<double>>> &quals, int match, int mismatch,
+         int gap, bool use_kmers, double kdist_cutoff, int band_size, double omega_a,
+         double omega_p, double omega_c, bool detect_singletons, int max_clust, double min_fold,
+         int min_hamming, int min_abund, bool use_quals, bool final_consensus,
+         bool vectorized_alignment, int homo_gap, int sse, bool gapless, bool greedy,
+         int n_threads, int sample_threads, bool verbose, std::optional<nb::callable> log,
+         dada2::AlignmentCache *cache) {
+        const size_t n = seqs.size();
+        if (abundances.size() != n || priors.size() != n || errs.size() != n || quals.size() != n)
+          throw std::invalid_argument("All per-sample inputs must have one entry per sample.");
+        std::vector<dada2::DadaInput> in(n);
+        for (size_t k = 0; k < n; ++k) {
+          if (errs[k].shape(0) != 16) throw std::invalid_argument("Error matrix must have 16 rows.");
+          in[k].seqs = &seqs[k];
+          in[k].abundances = &abundances[k];
+          in[k].priors = &priors[k];
+          in[k].err = errs[k].data();
+          in[k].err_ncol = static_cast<int>(errs[k].shape(1));
+          if (quals[k] && quals[k]->shape(0) > 0) {
+            if (quals[k]->shape(0) != seqs[k].size())
+              throw std::invalid_argument("quals must have one row per unique sequence.");
+            in[k].quals = quals[k]->data();
+            in[k].quals_ncol = static_cast<int>(quals[k]->shape(1));
+          }
+        }
+        dada2::DadaOptions opt;
+        opt.match = match; opt.mismatch = mismatch; opt.gap = gap; opt.use_kmers = use_kmers;
+        opt.kdist_cutoff = kdist_cutoff; opt.band_size = band_size; opt.omega_a = omega_a;
+        opt.omega_p = omega_p; opt.omega_c = omega_c; opt.detect_singletons = detect_singletons;
+        opt.max_clust = max_clust; opt.min_fold = min_fold; opt.min_hamming = min_hamming;
+        opt.min_abund = min_abund; opt.use_quals = use_quals; opt.final_consensus = final_consensus;
+        opt.vectorized_alignment = vectorized_alignment; opt.homo_gap = homo_gap; opt.sse = sse;
+        opt.gapless = gapless; opt.greedy = greedy;
+        std::vector<dada2::DadaOutput> outs;
+        {
+          PyHandlers handlers(std::move(log));
+          nb::gil_scoped_release release;
+          outs = dada2::dada_uniques_batch(in, opt, n_threads, sample_threads, verbose, cache);
+        }
+        nb::list res;
+        for (auto &o : outs) res.append(dada_output_to_dict(std::move(o)));
+        return res;
+      },
+      "seqs"_a, "abundances"_a, "priors"_a, "errs"_a, "quals"_a, "match"_a = 5,
+      "mismatch"_a = -4, "gap"_a = -8, "use_kmers"_a = true, "kdist_cutoff"_a = 0.42,
+      "band_size"_a = 16, "omega_a"_a = 1e-40, "omega_p"_a = 1e-4, "omega_c"_a = 1e-40,
+      "detect_singletons"_a = false, "max_clust"_a = 0, "min_fold"_a = 1.0, "min_hamming"_a = 1,
+      "min_abund"_a = 1, "use_quals"_a = true, "final_consensus"_a = false,
+      "vectorized_alignment"_a = true, "homo_gap"_a = -8, "sse"_a = 2, "gapless"_a = true,
+      "greedy"_a = true, "n_threads"_a = 1, "sample_threads"_a = 1, "verbose"_a = false,
+      "log"_a = nb::none(), "cache"_a = nb::none(),
+      "dada_uniques on several samples (lists with one entry per sample; sample i uses cache\n"
+      "slot i). Up to sample_threads samples run concurrently, each with up to n_threads\n"
+      "threads, on one shared pool. Returns one dict per sample, as dada_uniques; the results\n"
+      "do not depend on the thread counts. Log messages only come from the calling thread.");
+
   // ---------------------------------------------------------------------------- evaluate ---
   m.def("nwalign", &dada2::nwalign, "s1"_a, "s2"_a, "match"_a, "mismatch"_a, "gap_p"_a,
         "homo_gap_p"_a, "band"_a, "endsfree"_a, nb::call_guard<nb::gil_scoped_release>(),

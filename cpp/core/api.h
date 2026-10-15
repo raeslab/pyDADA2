@@ -70,12 +70,57 @@ struct DadaOutput {
   std::vector<double> pval_raw;
 };
 
+// Cache of centre-vs-raw comparisons (k-mer distance and substitutions) for repeated
+// dada_uniques runs on the same samples, e.g. the rounds of a self-consistent fit. Alignments do
+// not depend on the error matrix, so the cached runs give identical results; only the lambdas
+// are recomputed. One slot per sample; a slot is reset when the sequences or the alignment
+// parameters change. Memory is bounded: above budget_bytes (all slots together) comparisons are
+// computed without being cached. A slot must not be used by two calls at the same time.
+class AlignmentCache {
+ public:
+  AlignmentCache(size_t n_slots, size_t budget_bytes);
+  ~AlignmentCache();
+  AlignmentCache(const AlignmentCache &) = delete;
+  AlignmentCache &operator=(const AlignmentCache &) = delete;
+  size_t n_slots() const;
+  size_t budget_bytes() const;
+  size_t bytes_used() const;
+  struct Impl;
+  Impl &impl() { return *impl_; }
+
+ private:
+  std::unique_ptr<Impl> impl_;
+};
+
 // err: 16 x err_ncol row-major. quals: nraw x quals_ncol row-major (quals_ncol == max sequence
-// length), or nullptr/quals_ncol == 0 when there are no qualities.
+// length), or nullptr/quals_ncol == 0 when there are no qualities. cache/cache_slot: optional
+// comparison cache (see AlignmentCache).
 DadaOutput dada_uniques(const std::vector<std::string> &seqs, const std::vector<int> &abundances,
                         const std::vector<bool> &priors, const double *err, int err_ncol,
                         const double *quals, int quals_ncol, const DadaOptions &opt, int n_threads,
-                        bool verbose);
+                        bool verbose, AlignmentCache *cache = nullptr, size_t cache_slot = 0);
+
+// One sample of dada_uniques_batch (pointers must stay valid during the call).
+struct DadaInput {
+  const std::vector<std::string> *seqs = nullptr;
+  const std::vector<int> *abundances = nullptr;
+  const std::vector<bool> *priors = nullptr;
+  const double *err = nullptr;
+  int err_ncol = 0;
+  const double *quals = nullptr;
+  int quals_ncol = 0;
+};
+
+// dada_uniques on several samples. Up to sample_threads samples run concurrently (largest
+// first), each with up to n_threads threads; all threads come from one shared pool, so at most
+// max(n_threads, sample_threads) run at once. Sample i uses cache slot i. The results equal
+// those of separate dada_uniques calls. The calling thread checks for interrupts while it waits;
+// the first error (or interrupt) stops the other samples at their next check and is rethrown.
+// Logging (verbose) only reaches the calling thread's log handler.
+std::vector<DadaOutput> dada_uniques_batch(const std::vector<DadaInput> &samples,
+                                           const DadaOptions &opt, int n_threads,
+                                           int sample_threads, bool verbose,
+                                           AlignmentCache *cache = nullptr);
 
 // ------------------------------------------------------------------ evaluate.cpp ---
 std::pair<std::string, std::string> nwalign(const std::string &s1, const std::string &s2, int match,

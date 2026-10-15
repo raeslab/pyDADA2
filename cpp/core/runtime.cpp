@@ -11,6 +11,7 @@ namespace {
 // Thread-local: concurrent calls from different threads each see only their own handlers.
 thread_local dada2::LogHandler g_log;
 thread_local dada2::InterruptHandler g_interrupt;
+thread_local const std::atomic<bool> *g_cancel = nullptr;
 
 std::string vformat(const char *fmt, va_list ap) {
   va_list ap2;
@@ -41,6 +42,10 @@ ScopedHandlers::~ScopedHandlers() {
   g_interrupt = std::move(prev_interrupt_);
 }
 
+ScopedCancel::ScopedCancel(const std::atomic<bool> *flag) : prev_(g_cancel) { g_cancel = flag; }
+
+ScopedCancel::~ScopedCancel() { g_cancel = prev_; }
+
 }  // namespace dada2
 
 void dada2_stop(const char *fmt, ...) {
@@ -69,5 +74,6 @@ void dada2_log(const char *fmt, ...) {
 }
 
 void dada2_check_interrupt() {
+  if (g_cancel && g_cancel->load(std::memory_order_relaxed)) throw dada2::Interrupted();
   if (g_interrupt && g_interrupt()) throw dada2::Interrupted();
 }

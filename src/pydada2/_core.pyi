@@ -62,6 +62,71 @@ def dada_uniques(
     indices are 0-based, -1/NaN mean NA.
     """
 
+class AlignmentCache:
+    """
+    Cache of centre-vs-raw comparisons for repeated dada runs on the same samples (one slot
+    per sample); comparisons beyond budget_bytes are computed without being cached.
+    """
+
+    def __init__(self, n_slots: int, budget_bytes: int) -> None: ...
+    @property
+    def n_slots(self) -> int: ...
+    @property
+    def budget_bytes(self) -> int: ...
+    @property
+    def bytes_used(self) -> int: ...
+
+def dada_uniques_batch(
+    seqs: Sequence[Sequence[str]],
+    abundances: Sequence[Sequence[int]],
+    priors: Sequence[Sequence[bool]],
+    errs: Sequence[
+        Annotated[
+            NDArray[numpy.float64],
+            dict(shape=(None, None), order="C", device="cpu", writable=False),
+        ]
+    ],
+    quals: Sequence[
+        Annotated[
+            NDArray[numpy.float64],
+            dict(shape=(None, None), order="C", device="cpu", writable=False),
+        ]
+        | None
+    ],
+    match: int = 5,
+    mismatch: int = -4,
+    gap: int = -8,
+    use_kmers: bool = True,
+    kdist_cutoff: float = 0.42,
+    band_size: int = 16,
+    omega_a: float = 1e-40,
+    omega_p: float = 0.0001,
+    omega_c: float = 1e-40,
+    detect_singletons: bool = False,
+    max_clust: int = 0,
+    min_fold: float = 1.0,
+    min_hamming: int = 1,
+    min_abund: int = 1,
+    use_quals: bool = True,
+    final_consensus: bool = False,
+    vectorized_alignment: bool = True,
+    homo_gap: int = -8,
+    sse: int = 2,
+    gapless: bool = True,
+    greedy: bool = True,
+    n_threads: int = 1,
+    sample_threads: int = 1,
+    verbose: bool = False,
+    log: Callable | None = None,
+    cache: AlignmentCache | None = None,
+) -> list:
+    """
+    dada_uniques on several samples (lists with one entry per sample; sample i uses cache
+    slot i). Up to sample_threads samples run concurrently, each with up to n_threads
+    threads, on one shared pool. Returns one dict per sample, as dada_uniques; the results
+    do not depend on the thread counts. Log messages only come from the calling thread.
+    """
+
 def nwalign(
     s1: str,
     s2: str,

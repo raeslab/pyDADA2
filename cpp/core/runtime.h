@@ -10,6 +10,7 @@
 #ifndef DADA2_RUNTIME_H
 #define DADA2_RUNTIME_H
 
+#include <atomic>
 #include <functional>
 #include <stdexcept>
 #include <string>
@@ -47,6 +48,20 @@ class ScopedHandlers {
  private:
   LogHandler prev_log_;
   InterruptHandler prev_interrupt_;
+};
+
+// RAII: makes dada2_check_interrupt() on the calling thread also throw Interrupted once *flag is
+// set (used to stop concurrent work, e.g. the other samples of a batch, after an error or an
+// interrupt). Restores the previous flag of the thread on destruction.
+class ScopedCancel {
+ public:
+  explicit ScopedCancel(const std::atomic<bool> *flag);
+  ~ScopedCancel();
+  ScopedCancel(const ScopedCancel &) = delete;
+  ScopedCancel &operator=(const ScopedCancel &) = delete;
+
+ private:
+  const std::atomic<bool> *prev_;
 };
 
 }  // namespace dada2

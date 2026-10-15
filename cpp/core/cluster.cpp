@@ -7,6 +7,9 @@
 //  * b_shuffle2 scratch arrays are std::vectors (exception safety).
 //  * b_bud sets birth_from for prior-born ("P") clusters (upstream left it unset: garbage).
 //  * Lambda range checks are NaN-safe.
+//  * b_compare can use a cache of earlier comparisons with the same centre (see CentreCache in
+//    dada.h): the k-mer screen decision is re-applied to the cached k-mer distance and lambda is
+//    recomputed from the cached substitutions exactly as compute_lambda does.
 #include "dada.h"
 #include "parallel.h"
 
@@ -38,24 +41,58 @@ void b_compare(B *b, unsigned int i, const ErrMat &errMat,
   std::vector<unsigned char> aligned(b->nraw, 0), shrouded(b->nraw, 0);
   Raw *center = b->bi[i]->center;
   const bool use_quals = b->use_quals;
+
+  // pydada2: comparison cache (alignments and k-mer distances do not depend on the error matrix).
+  // New results are collected per raw and merged into the cache serially below.
+  CentreCache *cc = b->cache ? cache_centre(b->cache, center->index, b->nraw) : NULL;
+  struct NewSubs {  // owns the subs kept for the cache until the merge (exception safety)
+    std::vector<Sub *> v;
+    ~NewSubs() { for(Sub *s : v) sub_free(s); }
+  } new_subs;
+  std::vector<double> new_kdist;
+  std::vector<uint8_t> new_state;  // 0: nothing new, 1: screened, 2: aligned
+  if(cc) {
+    new_subs.v.assign(b->nraw, NULL);
+    new_kdist.assign(b->nraw, 0.0);
+    new_state.assign(b->nraw, 0);
+  }
+
   auto body = [&](std::size_t begin, std::size_t end) {
     Raw *raw;
     Sub *sub;
     for(std::size_t index=begin;index<end;index++) {
       raw = b->raw[index];
+      comps[index].i = i;
+      comps[index].index = index;
       if(greedy && (raw->reads > center->reads)) {
         sub = NULL;
       } else if(greedy && raw->lock) { // was (raw->p > 0.5)
         sub = NULL;
+      } else if(cc && cc->nsubs[index] != CACHE_UNKNOWN &&
+                (cc->nsubs[index] != CACHE_SCREENED || (use_kmers && cc->kdist[index] > kdist_cutoff))) {
+        // Cached: same outcome as sub_new + compute_lambda below
+        aligned[index] = 1;
+        if(use_kmers && cc->kdist[index] > kdist_cutoff) { // k-mer screen (raw_align)
+          shrouded[index] = 1;
+          comps[index].lambda = 0.0; // compute_lambda(raw, NULL, ...)
+          comps[index].hamming = -1;
+        } else {
+          comps[index].lambda = compute_lambda_packed(raw, &cc->subs[cc->off[index]], cc->nsubs[index], errMat, use_quals);
+          comps[index].hamming = cc->nsubs[index];
+        }
+        continue;
       } else {
-        sub = sub_new(center, raw, match, mismatch, gap_pen, homo_gap_pen, use_kmers, kdist_cutoff, band_size, vectorized_alignment, SSE, gapless);
+        double kdist = 0.0;
+        sub = sub_new(center, raw, match, mismatch, gap_pen, homo_gap_pen, use_kmers, kdist_cutoff, band_size, vectorized_alignment, SSE, gapless, cc ? &kdist : NULL);
         aligned[index] = 1;
         if(!sub) { shrouded[index] = 1; }
+        if(cc) {
+          new_kdist[index] = kdist;
+          new_state[index] = sub ? 2 : 1;
+        }
       }
 
       // Make comparison object
-      comps[index].i = i;
-      comps[index].index = index;
       try {
         comps[index].lambda = compute_lambda(raw, sub, errMat, use_quals);
       } catch(...) {
@@ -67,10 +104,34 @@ void b_compare(B *b, unsigned int i, const ErrMat &errMat,
       } else {
         comps[index].hamming = -1;
       }
-      sub_free(sub);
+      if(cc && sub) { new_subs.v[index] = sub; } // kept for the cache
+      else { sub_free(sub); }
     }
   };
   dada2::parallel_for(0, b->nraw, body, GRAIN_SIZE, n_threads);
+
+  if(cc) { // store the new comparisons (serial, raw order)
+    for(index=0; index<b->nraw; index++) {
+      if(new_state[index] == 1) {
+        cc->kdist[index] = new_kdist[index];
+        cc->nsubs[index] = CACHE_SCREENED;
+      } else if(new_state[index] == 2) {
+        Sub *sub = new_subs.v[index];
+        if(cache_reserve(b->cache, sub->nsubs * sizeof(uint32_t))) {
+          cc->kdist[index] = new_kdist[index];
+          cc->off[index] = (uint32_t)cc->subs.size();
+          for(unsigned int s=0;s<sub->nsubs;s++) {
+            uint32_t pos1 = sub->map[sub->pos[s]];
+            uint32_t t = (uint32_t)((sub->nt0[s]-1)*4 + (sub->nt1[s]-1));
+            cc->subs.push_back((pos1 << 16) | t);
+          }
+          cc->nsubs[index] = (uint16_t)sub->nsubs;
+        }
+        sub_free(sub);
+        new_subs.v[index] = NULL;
+      }
+    }
+  }
 
   // Selectively store
   for(index=0; index<b->nraw; index++) {

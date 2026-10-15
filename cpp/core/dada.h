@@ -7,6 +7,8 @@
 //  * Rcpp::NumericMatrix error matrices replaced by ErrMat (row-major 16 x ncol view).
 //  * R-object output builders (error.cpp) return plain structs (see output.h).
 //  * X64/SSE2 detection also recognises MSVC (_M_X64).
+//  * B has an optional comparison cache (CompCacheSlot, see dada_main.cpp/cluster.cpp);
+//    raw_align/sub_new can report the k-mer distance.
 
 #ifndef _DADA_H_
 #define _DADA_H_
@@ -132,6 +134,8 @@ typedef struct {
 } Bi;
 
 // B: holds all the clusters. The full clustering (or partition).
+struct CompCacheSlot;  // comparison cache of one sample (dada_main.cpp)
+
 typedef struct {
   unsigned int nclust;
   unsigned int nraw;
@@ -147,7 +151,24 @@ typedef struct {
   size_t nlam;
   Raw **raw;
   Bi **bi;
+  CompCacheSlot *cache;  // pydada2: optional cache of centre-vs-raw comparisons (NULL: none)
 } B;
+
+/* pydada2: cache of the comparisons of one sample, kept across dada_uniques runs. For each centre
+   (raw index) and raw: the k-mer distance and, if the pair was aligned, the substitutions packed as
+   (pos1 << 16 | nti0*4+nti1). */
+#define CACHE_UNKNOWN 0xFFFF   // nsubs: pair not computed yet
+#define CACHE_SCREENED 0xFFFE  // nsubs: pair rejected by the k-mer screen (only kdist known)
+struct CentreCache {
+  std::vector<double> kdist;
+  std::vector<uint16_t> nsubs;
+  std::vector<uint32_t> off;
+  std::vector<uint32_t> subs;
+};
+// Returns the cache of centre `centre` (creating it if the memory budget allows), or NULL.
+CentreCache *cache_centre(CompCacheSlot *slot, unsigned int centre, unsigned int nraw);
+// Reserves `bytes` more of the memory budget; false if that would exceed it.
+bool cache_reserve(CompCacheSlot *slot, size_t bytes);
 
 /* -------------------------------------------
    -------- METHODS METHODS METHODS ----------
@@ -188,9 +209,10 @@ char **nwalign_endsfree_homo(const char *s1, size_t len1, const char *s2, size_t
 char **nwalign_vectorized2(const char *s1, size_t len1, const char *s2, size_t len2, int16_t match, int16_t mismatch, int16_t gap_p, int16_t end_gap_p, int band);
 char **nwalign_gapless(const char *s1, size_t len1, const char *s2, size_t len2);
 char **raw_align(Raw *raw1, Raw *raw2, int match, int mismatch, int gap_p, int homo_gap_p, bool use_kmers,
-                 double kdist_cutoff, int band, bool vectorized_alignment, int SSE, bool gapless);
+                 double kdist_cutoff, int band, bool vectorized_alignment, int SSE, bool gapless,
+                 double *kdist_out = NULL);
 Sub *sub_new(Raw *raw0, Raw *raw1, int match, int mismatch, int gap_p, int homo_gap_p, bool use_kmers, double kdist_cutoff,
-             int band, bool vectorized_alignment, int SSE, bool gapless);
+             int band, bool vectorized_alignment, int SSE, bool gapless, double *kdist_out = NULL);
 Sub *al2subs(char **al);
 Sub *sub_copy(Sub *sub);
 void sub_free(Sub *sub);
@@ -211,6 +233,8 @@ void b_p_update(B *b, bool greedy, bool detect_singletons);
 double calc_pA(int reads, double E_reads, bool prior);
 double get_pA(Raw *raw, Bi *bi, bool detect_singletons);
 double compute_lambda(Raw *raw, Sub *sub, const ErrMat &errMat, bool use_quals);
+// compute_lambda from packed substitutions (pos1 << 16 | nti0*4+nti1), same result.
+double compute_lambda_packed(Raw *raw, const uint32_t *subs, unsigned int nsubs, const ErrMat &errMat, bool use_quals);
 double get_self(char *seq, double err[4][4]);
 
 // methods implemented in chimera.cpp (internal helpers)

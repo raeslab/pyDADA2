@@ -240,3 +240,101 @@ def test_dada_uniques_raising_log_callback_propagates():
     for _ in range(3):  # the B object is released on every abort (checked under ASan)
         with pytest.raises(RuntimeError, match="log failed"):
             core.dada_uniques(seqs, ab, pri, err, quals, verbose=True, log=boom)
+
+
+def _samples():
+    from pydada2 import derep_fastq
+    from pydada2.datasets import err_balanced_f, example_path
+
+    err = np.ascontiguousarray(err_balanced_f())
+    out = []
+    for name in ("sam1F.fastq.gz", "sam2F.fastq.gz"):
+        drp = derep_fastq(example_path(name))
+        for cut in (None, 400):  # a smaller sub-sample as a third/fourth sample
+            seqs = drp.sequences[:cut]
+            n = len(seqs)
+            out.append(
+                (seqs, drp.uniques.to_numpy()[:n].tolist(), [False] * n, err,
+                 np.ascontiguousarray(drp.quals[:n]))
+            )  # fmt: skip
+    return out
+
+
+def _batch(samples, **kw):
+    cols = list(zip(*samples, strict=True))
+    return core.dada_uniques_batch(*[list(c) for c in cols], **kw)
+
+
+def _same(a, b):
+    assert a["sequence"] == b["sequence"]
+    for key in ("abundance", "map", "pval_raw", "trans", "birth_from", "birth_pval"):
+        np.testing.assert_array_equal(a[key], b[key])
+
+
+@pytest.mark.parametrize(("n_threads", "sample_threads"), [(1, 1), (4, 1), (1, 4), (4, 4)])
+def test_dada_uniques_batch_equals_single_calls(n_threads, sample_threads):
+    samples = _samples()
+    ref = [core.dada_uniques(*s) for s in samples]
+    outs = _batch(samples, n_threads=n_threads, sample_threads=sample_threads)
+    assert len(outs) == len(ref)
+    for a, b in zip(outs, ref, strict=True):
+        _same(a, b)
+
+
+@pytest.mark.parametrize("budget", [0, 20_000, 1 << 30])
+def test_alignment_cache_gives_identical_results(budget):
+    samples = _samples()
+    ref = [core.dada_uniques(*s) for s in samples]
+    cache = core.AlignmentCache(len(samples), budget)
+    for _ in range(3):  # repeated rounds reuse the cached comparisons
+        outs = _batch(samples, n_threads=2, sample_threads=2, cache=cache)
+        for a, b in zip(outs, ref, strict=True):
+            _same(a, b)
+    assert cache.bytes_used <= budget
+    if budget > 1 << 20:
+        assert cache.bytes_used > 0
+    # different samples in the same slots (the slots are reset), other alignment parameters
+    outs = _batch(samples[::-1], cache=cache)
+    for a, b in zip(outs, ref[::-1], strict=True):
+        _same(a, b)
+    ref_band = [core.dada_uniques(*s, band_size=8) for s in samples]
+    for a, b in zip(_batch(samples, band_size=8, cache=cache), ref_band, strict=True):
+        _same(a, b)
+
+
+def test_alignment_cache_with_changing_error_rates():
+    # the cache stores alignments only: rounds with other error matrices give fresh results
+    samples = _samples()[:2]
+    cache = core.AlignmentCache(2, 1 << 30)
+    _batch(samples, cache=cache)
+    err2 = np.ascontiguousarray(np.clip(samples[0][3] * 1.7, 0, 1))
+    mod = [(s[0], s[1], s[2], err2, s[4]) for s in samples]
+    ref = [core.dada_uniques(*s) for s in mod]
+    for a, b in zip(_batch(mod, cache=cache, n_threads=3), ref, strict=True):
+        _same(a, b)
+
+
+def test_dada_uniques_batch_error_stops_batch():
+    samples = _samples()
+    bad = list(samples[1])
+    bad[0] = ["ACGTN" * 50, *bad[0][1:]]
+    with pytest.raises(ValueError, match="A/C/G/T"):
+        _batch([samples[0], tuple(bad), samples[2]], sample_threads=3)
+    with pytest.raises(ValueError, match="one entry per sample"):
+        core.dada_uniques_batch([samples[0][0]], [], [], [], [])
+    assert core.dada_uniques_batch([], [], [], [], []) == []
+
+
+@pytest.mark.skipif(not hasattr(signal, "pthread_kill"), reason="needs pthread_kill")
+def test_dada_uniques_batch_interrupt():
+    samples = _samples() * 12
+    main = threading.main_thread().ident
+    timer = threading.Timer(0.05, signal.pthread_kill, args=(main, signal.SIGINT))
+    timer.start()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            _batch(samples, n_threads=2, sample_threads=2)
+    finally:
+        timer.cancel()
+    # the pool and the handlers still work afterwards
+    _same(_batch(samples[:1], n_threads=2)[0], core.dada_uniques(*samples[0]))

@@ -5,6 +5,7 @@
 //  * Rcpp::ppois(n, lambda, lower.tail=false) -> ppois_upper (stats.h, Boost.Math based).
 //  * Removed the commented-out copy of R's nmath ppois/pgamma (GPL) carried upstream.
 //  * compute_lambda: single thread-safe implementation over an ErrMat view; NaN-safe range check.
+//  * compute_lambda_packed: the same computation from cached (packed) substitutions.
 /*
 Pval.cpp contains the functions related to calculating the abundance pval in DADA2.
 */
@@ -149,5 +150,46 @@ double compute_lambda(Raw *raw, Sub *sub, const ErrMat &errMat, bool use_quals) 
   
   if(!(lambda >= 0 && lambda <= 1)) { dada2_stop("Bad lambda."); } // NaN-safe
   
+  return lambda;
+}
+
+// pydada2: compute_lambda for substitutions packed as (pos1 << 16 | nti0*4+nti1) (comparison
+// cache). Same checks, same transition vector and the same product order as compute_lambda.
+double compute_lambda_packed(Raw *raw, const uint32_t *subs, unsigned int nsubs, const ErrMat &errMat, bool use_quals) {
+  const unsigned int ncol = errMat.ncol;
+  const double *err_mat = errMat.data;
+  int pos1, nti1, len1;
+  unsigned int s;
+  double lambda;
+  unsigned int tvec[SEQLEN];
+  unsigned int qind[SEQLEN];
+
+  len1 = raw->length;
+  for(pos1=0;pos1<len1;pos1++) {
+    nti1 = ((int) raw->seq[pos1]) - 1;
+    if(nti1 == 0 || nti1 == 1 || nti1 == 2 || nti1 == 3) {
+      tvec[pos1] = nti1*4 + nti1;
+    } else {
+      dada2_stop("Non-ACGT sequences in compute_lambda.");
+    }
+    if(use_quals) {
+      qind[pos1] = raw->qual[pos1];
+    } else {
+      qind[pos1] = 0;
+    }
+    if( qind[pos1] > (ncol-1) ) {
+      dada2_stop("Rounded quality exceeded range of err lookup table.");
+    }
+  }
+  for(s=0;s<nsubs;s++) {
+    pos1 = (int)(subs[s] >> 16);
+    if(pos1 >= len1) { dada2_stop("CL: Bad pos1: %i (len1=%i).", pos1, len1); }
+    tvec[pos1] = subs[s] & 0xFFFF;
+  }
+  lambda = 1.0;
+  for(pos1=0;pos1<len1;pos1++) {
+    lambda = lambda * err_mat[tvec[pos1]*ncol+qind[pos1]];
+  }
+  if(!(lambda >= 0 && lambda <= 1)) { dada2_stop("Bad lambda."); } // NaN-safe
   return lambda;
 }

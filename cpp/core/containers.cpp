@@ -96,6 +96,7 @@ B *b_new(Raw **raws, unsigned int nraw, double omegaA, double omegaP, bool use_q
   b->omegaA = omegaA;
   b->omegaP = omegaP;
   b->use_quals = use_quals;
+  b->cache = NULL;
   
   // Initialize array of raws
   // Remember that these were allocated outside the construction of B
