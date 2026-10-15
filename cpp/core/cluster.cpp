@@ -77,7 +77,9 @@ void b_compare(B *b, unsigned int i, const ErrMat &errMat,
           comps[index].lambda = 0.0; // compute_lambda(raw, NULL, ...)
           comps[index].hamming = -1;
         } else {
-          comps[index].lambda = compute_lambda_packed(raw, &cc->subs[cc->off[index]], cc->nsubs[index], errMat, use_quals);
+          const uint32_t *packed = cc->subs.data() + cc->off[index];
+          comps[index].lambda = b->lam ? compute_lambda_tab_packed(*b->lam, raw, packed, cc->nsubs[index])
+                                       : compute_lambda_packed(raw, packed, cc->nsubs[index], errMat, use_quals);
           comps[index].hamming = cc->nsubs[index];
         }
         continue;
@@ -94,7 +96,8 @@ void b_compare(B *b, unsigned int i, const ErrMat &errMat,
 
       // Make comparison object
       try {
-        comps[index].lambda = compute_lambda(raw, sub, errMat, use_quals);
+        comps[index].lambda = b->lam ? compute_lambda_tab(*b->lam, raw, sub)
+                                     : compute_lambda(raw, sub, errMat, use_quals);
       } catch(...) {
         sub_free(sub);
         throw;

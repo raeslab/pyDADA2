@@ -136,6 +136,19 @@ typedef struct {
 // B: holds all the clusters. The full clustering (or partition).
 struct CompCacheSlot;  // comparison cache of one sample (dada_main.cpp)
 
+/* pydada2: per-raw factors of lambda for one error matrix. lambda(raw, sub) is the product, in
+   position order, of err(t, q) over the raw's positions, where t is the self-transition except
+   at substitutions. fac[pos] is the self-transition factor and prod[p] the running product of
+   the first p factors (prod[0] = 1), so lambda = prod[first substitution] * (remaining factors
+   in order): the same multiplications in the same order as compute_lambda. */
+struct LambdaTable {
+  std::vector<double> fac, prod;  // nraw x stride
+  size_t stride = 0;              // max length + 1
+  const double *err = NULL;
+  unsigned int ncol = 0;
+  bool use_quals = true;
+};
+
 typedef struct {
   unsigned int nclust;
   unsigned int nraw;
@@ -152,6 +165,7 @@ typedef struct {
   Raw **raw;
   Bi **bi;
   CompCacheSlot *cache;  // pydada2: optional cache of centre-vs-raw comparisons (NULL: none)
+  const LambdaTable *lam; // pydada2: optional precomputed lambda factors (NULL: none)
 } B;
 
 /* pydada2: cache of the comparisons of one sample, kept across dada_uniques runs. For each centre
@@ -235,6 +249,11 @@ double get_pA(Raw *raw, Bi *bi, bool detect_singletons);
 double compute_lambda(Raw *raw, Sub *sub, const ErrMat &errMat, bool use_quals);
 // compute_lambda from packed substitutions (pos1 << 16 | nti0*4+nti1), same result.
 double compute_lambda_packed(Raw *raw, const uint32_t *subs, unsigned int nsubs, const ErrMat &errMat, bool use_quals);
+// Fill a LambdaTable for the raws (validates sequences and quality range like compute_lambda).
+void lambda_table_init(LambdaTable &lt, Raw **raws, unsigned int nraw, unsigned int maxlen, const ErrMat &errMat, bool use_quals, int n_threads);
+// compute_lambda(raw, sub) / compute_lambda_packed using the table; same results.
+double compute_lambda_tab(const LambdaTable &lt, Raw *raw, Sub *sub);
+double compute_lambda_tab_packed(const LambdaTable &lt, Raw *raw, const uint32_t *subs, unsigned int nsubs);
 double get_self(char *seq, double err[4][4]);
 
 // methods implemented in chimera.cpp (internal helpers)

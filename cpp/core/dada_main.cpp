@@ -74,12 +74,19 @@ struct CacheParams {
   }
 };
 
+struct SubDelete {
+  void operator()(Sub *s) const { sub_free(s); }
+};
+
 struct CompCacheSlot {
   dada2::AlignmentCache::Impl *owner = nullptr;
   bool valid = false;
   CacheParams params{};
   std::vector<std::string> seqs;  // the sample the slot belongs to (compared exactly)
   std::unordered_map<unsigned int, std::unique_ptr<CentreCache>> centres;
+  // Final substitutions (centre, raw) -> Sub of earlier runs (computed without the k-mer screen,
+  // so they can differ from the b_compare alignments and are cached separately).
+  std::unordered_map<uint64_t, std::unique_ptr<Sub, SubDelete>> final_subs;
   size_t bytes = 0;               // budget used by this slot
 };
 
@@ -118,6 +125,7 @@ void slot_reset(CompCacheSlot &slot) {
   slot.owner->used.fetch_sub(slot.bytes);
   slot.bytes = 0;
   slot.centres.clear();
+  slot.final_subs.clear();
   slot.seqs.clear();
   slot.valid = false;
 }
@@ -268,6 +276,9 @@ DadaOutput dada_uniques(const std::vector<std::string> &seqs, const std::vector<
   st.bb = b_new(raws, nraw, opt.omega_a, opt.omega_p, opt.use_quals); // New cluster with all sequences in 1 bi
   B *bb = st.bb;
   bb->cache = slot_for(cache, cache_slot, seqs, CacheParams{match, mismatch, gap, homo_gap, band_size, SSE, use_kmers, vectorized_alignment, gapless});
+  LambdaTable lambda_table;  // must outlive run_dada
+  lambda_table_init(lambda_table, raws, nraw, maxlen, errMat, opt.use_quals, n_threads);
+  bb->lam = &lambda_table;
   run_dada(bb, errMat,
            match, mismatch, gap, homo_gap, use_kmers, opt.kdist_cutoff, band_size,
            opt.detect_singletons, opt.max_clust, opt.min_fold, opt.min_hamming, opt.min_abund,
@@ -281,18 +292,41 @@ DadaOutput dada_uniques(const std::vector<std::string> &seqs, const std::vector<
   Sub **birth_subs = st.birth_subs.data();
 
   // Was FinalSubsParallel (over clusters); now over raws, then birth subs over clusters. Each
-  // raw/cluster writes only its own slot.
+  // raw/cluster writes only its own slot. With a comparison cache, the final substitutions of
+  // earlier runs on the same sample are reused (same alignment call, same inputs).
   std::vector<std::pair<unsigned int, Raw *>> members;
   members.reserve(bb->nraw);
   for(i=0;i<bb->nclust;i++) {
     for(r=0;r<bb->bi[i]->nraw;r++) { members.emplace_back(i, bb->bi[i]->raw[r]); }
   }
+  CompCacheSlot *slot = bb->cache;
+  auto final_key = [&](std::size_t m) {
+    return ((uint64_t)bb->bi[members[m].first]->center->index << 32) | members[m].second->index;
+  };
+  std::vector<unsigned char> from_cache(slot ? members.size() : 0, 0);
   dada2::parallel_for(0, members.size(), [&](std::size_t begin, std::size_t end) {
     for(std::size_t m=begin;m<end;m++) {
       Raw *raw = members[m].second;
+      if(slot) { // the alignment of an earlier run (same sample and parameters)
+        auto it = slot->final_subs.find(final_key(m));
+        if(it != slot->final_subs.end()) {
+          subs[raw->index] = sub_copy(it->second.get());
+          from_cache[m] = 1;
+          continue;
+        }
+      }
       subs[raw->index] = sub_new(bb->bi[members[m].first]->center, raw, match, mismatch, gap, homo_gap, false, 1.0, band_size, vectorized_alignment, SSE, gapless);
     }
   }, GRAIN_SIZE, n_threads);
+  if(slot) {
+    for(std::size_t m=0;m<members.size();m++) {
+      Sub *sub = subs[members[m].second->index];
+      if(from_cache[m] || !sub) { continue; }
+      const size_t bytes = sizeof(Sub) + 64 + sub->len0 * sizeof(uint16_t) + sub->nsubs * (sizeof(uint16_t) + 4);
+      if(!cache_reserve(slot, bytes)) { break; }
+      slot->final_subs.emplace(final_key(m), std::unique_ptr<Sub, SubDelete>(sub_copy(sub)));
+    }
+  }
   dada2::parallel_for(0, bb->nclust, [&](std::size_t begin, std::size_t end) {
     for(std::size_t i=begin;i<end;i++) {
       // Make birth sub for that cluster
