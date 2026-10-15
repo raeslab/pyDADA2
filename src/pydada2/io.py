@@ -132,8 +132,7 @@ def read_fastq_chunks(
             if rec.qualities is None:  # pragma: no cover - dnaio yields FASTA without qualities
                 raise ValueError(f"{path}: not a FASTQ file.")
             ids.append(rec.name)
-            sq = rec.sequence
-            seqs.append(sq if sq.isupper() else sq.upper())  # no copy when already upper
+            seqs.append(rec.sequence.upper())
             quals.append(rec.qualities)
             if len(seqs) == n:
                 yield FastqChunk(ids, seqs, quals, quality_offset(quals, quality_type))
@@ -226,7 +225,7 @@ def read_fasta(path: PathLike, *, raw_ids: bool = False) -> list[tuple[str, str]
         with gc_paused():
             return _read_fasta_lines(path, raw_ids)
     with dnaio.open(os.fspath(path), mode="r") as reader:  # FASTQ (or unrecognised: dnaio errors)
-        return [(rec.name, s if (s := rec.sequence).isupper() else s.upper()) for rec in reader]
+        return [(rec.name, rec.sequence.upper()) for rec in reader]
 
 
 def _starts_with_fasta_header(path: PathLike) -> bool:
@@ -262,7 +261,7 @@ def _read_fasta_lines(path: PathLike, raw_ids: bool) -> list[tuple[str, str]]:
                 if name is not None:
                     q = "".join(seq)
                     ascii_ok = ascii_ok and name.isascii() and q.isascii()
-                    out.append((name, q if q.isupper() else q.upper()))
+                    out.append((name, q.upper()))
                 name = line[1:].rstrip("\r\n") if raw_ids and line[0] == ">" else s[1:]
                 seq = []
             elif s[0] == "#":
@@ -272,7 +271,7 @@ def _read_fasta_lines(path: PathLike, raw_ids: bool) -> list[tuple[str, str]]:
     if name is not None:
         q = "".join(seq)
         ascii_ok = ascii_ok and name.isascii() and q.isascii()
-        out.append((name, q if q.isupper() else q.upper()))
+        out.append((name, q.upper()))
     if not ascii_ok:
         with dnaio.open(os.fspath(path), mode="r") as reader:
             for _ in reader:  # raises dnaio's FastaFormatError
