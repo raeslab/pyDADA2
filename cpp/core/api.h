@@ -11,7 +11,9 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -116,21 +118,35 @@ std::pair<std::vector<int>, std::vector<int>> table_bimera(
 constexpr int NBOOT = 100;
 
 // Fit-once reference k-mer model (the first half of upstream C_assign_taxonomy2).
+//
+// The log-probability table holds the same float values as upstream's, but k-mer-major:
+// log_probability()[kmer * ngenus_pad() + g] for g < ngenus() (upstream: [g * 4^8 + kmer]); the
+// ngenus_pad() - ngenus() padding columns are 0. The layout lets the classifier stream the rows
+// of a query's k-mers for all genera at once.
 class TaxonomyModel {
  public:
+  // refs: reference sequences (only read during construction).
   // ref_to_genus: 0-based genus index for each reference.
   // genusmat: ngenus x nlevel row-major integer taxonomy codes.
-  TaxonomyModel(const std::vector<std::string> &refs, const std::vector<int> &ref_to_genus,
-                const std::vector<int> &genusmat, int ngenus, int nlevel);
+  TaxonomyModel(const std::vector<std::string_view> &refs, const std::vector<int> &ref_to_genus,
+                const std::vector<int> &genusmat, int ngenus, int nlevel, int n_threads = 1);
+  // Restore a model from its table (as returned by log_probability(); used for pickling).
+  TaxonomyModel(const std::vector<int> &genusmat, int ngenus, int nlevel, const float *table,
+                size_t table_size);
   int ngenus() const { return ngenus_; }
   int nlevel() const { return nlevel_; }
-  const std::vector<float> &log_probability() const { return lgk_probability_; }
+  int ngenus_pad() const { return ngenus_pad_; }
+  const float *log_probability() const { return table_.get(); }
+  size_t table_size() const;  // number of floats: 4^8 * ngenus_pad()
   const std::vector<int> &genusmat() const { return genusmat_; }
 
  private:
-  int ngenus_, nlevel_;
-  std::vector<float> lgk_probability_;
+  struct AlignedDelete {
+    void operator()(float *p) const;
+  };
+  int ngenus_, nlevel_, ngenus_pad_;
   std::vector<int> genusmat_;
+  std::unique_ptr<float[], AlignedDelete> table_;
 };
 
 struct TaxonomyResult {

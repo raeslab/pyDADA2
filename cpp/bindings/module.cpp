@@ -298,17 +298,58 @@ NB_MODULE(_core, m) {
                                    "Reference k-mer model for the naive Bayesian classifier.")
       .def(
           "__init__",
-          [](dada2::TaxonomyModel *self, const std::vector<std::string> &refs,
-             const std::vector<int> &ref_to_genus, CArray<int32_t> genusmat) {
+          [](dada2::TaxonomyModel *self, nb::typed<nb::sequence, nb::str> refs,
+             const std::vector<int> &ref_to_genus,
+             CArray<int32_t> genusmat, int n_threads) {
+            // Read the reference strings in place (no copy of the ~GB of sequence data): the
+            // tuple keeps the str objects alive while the GIL is released.
+            nb::tuple keep = nb::steal<nb::tuple>(PySequence_Tuple(refs.ptr()));
+            if (!keep.is_valid()) throw nb::python_error();
+            const size_t n = keep.size();
+            std::vector<std::string_view> views;
+            views.reserve(n);
+            for (size_t i = 0; i < n; ++i) {
+              PyObject *o = PyTuple_GetItem(keep.ptr(), static_cast<Py_ssize_t>(i));
+              if (!PyUnicode_Check(o)) throw nb::type_error("refs must be a sequence of str.");
+              Py_ssize_t len = 0;
+              const char *data = PyUnicode_AsUTF8AndSize(o, &len);
+              if (!data) throw nb::python_error();
+              views.emplace_back(data, static_cast<size_t>(len));
+            }
             std::vector<int> gm(genusmat.data(), genusmat.data() + genusmat.size());
             const int ngenus = static_cast<int>(genusmat.shape(0));
             const int nlevel = static_cast<int>(genusmat.shape(1));
             nb::gil_scoped_release release;
-            new (self) dada2::TaxonomyModel(refs, ref_to_genus, gm, ngenus, nlevel);
+            new (self) dada2::TaxonomyModel(views, ref_to_genus, gm, ngenus, nlevel, n_threads);
           },
-          "refs"_a, "ref_to_genus"_a, "genusmat"_a)
+          "refs"_a, "ref_to_genus"_a, "genusmat"_a, "n_threads"_a = 1)
       .def_prop_ro("ngenus", &dada2::TaxonomyModel::ngenus)
-      .def_prop_ro("nlevel", &dada2::TaxonomyModel::nlevel);
+      .def_prop_ro("nlevel", &dada2::TaxonomyModel::nlevel)
+      .def("__getstate__",
+           [](nb::handle self) {
+             const auto &model = nb::cast<const dada2::TaxonomyModel &>(self);
+             const size_t ngenus = static_cast<size_t>(model.ngenus());
+             const size_t nlevel = static_cast<size_t>(model.nlevel());
+             std::vector<int32_t> gm(model.genusmat().begin(), model.genusmat().end());
+             size_t tshape[2] = {model.table_size() / static_cast<size_t>(model.ngenus_pad()),
+                                 static_cast<size_t>(model.ngenus_pad())};
+             // A read-only view of the table, kept alive by the model object.
+             nb::ndarray<nb::numpy, const float, nb::ndim<2>> table(
+                 model.log_probability(), 2, tshape, self);
+             return nb::make_tuple(to_numpy(std::move(gm), {ngenus, nlevel}), table);
+           })
+      .def("__setstate__",
+           [](dada2::TaxonomyModel *self, const nb::tuple &state) {
+             if (state.size() != 2) throw std::invalid_argument("Invalid TaxonomyModel state.");
+             auto gm = nb::cast<CArray<int32_t>>(state[0]);
+             auto table = nb::cast<nb::ndarray<const float, nb::ndim<2>, nb::c_contig,
+                                               nb::device::cpu>>(state[1]);
+             std::vector<int> gmv(gm.data(), gm.data() + gm.size());
+             const int ngenus = static_cast<int>(gm.shape(0));
+             const int nlevel = static_cast<int>(gm.shape(1));
+             nb::gil_scoped_release release;
+             new (self) dada2::TaxonomyModel(gmv, ngenus, nlevel, table.data(), table.size());
+           });
 
   m.attr("NBOOT") = dada2::NBOOT;
   m.def(

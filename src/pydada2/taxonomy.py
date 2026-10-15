@@ -143,8 +143,15 @@ class TaxonomyClassifier(BaseEstimator):
         if not records:
             raise ValueError("No usable reference sequences.")
         refs = [s for _, s in records]
-        tax = [i.strip() for i, _ in records]
-        if all(re.search(r"FU\|re[pf]s", t) for t in tax[:10]):  # UNITE general FASTA
+        # Taxonomy strings are processed once per distinct id (SILVA: ~5k ids for ~450k refs);
+        # first-appearance order is kept, so genus indices are those of the per-record code.
+        id_codes, id_uniques = pd.factorize(
+            np.array([i for i, _ in records], dtype=object), use_na_sentinel=False
+        )
+        tax = [str(i).strip() for i in id_uniques]
+        if all(
+            re.search(r"FU\|re[pf]s", t.strip()) for t, _ in records[:10]
+        ):  # UNITE general FASTA
             logger.info("UNITE fungal taxonomic reference detected.")
             tax = [t.split("|")[4] if len(t.split("|")) > 4 else "" for t in tax]
             tax = [re.sub(r"[pcofg]__unidentified;", _UNSPECIFIED + ";", t) for t in tax]
@@ -170,7 +177,11 @@ class TaxonomyClassifier(BaseEstimator):
             col: dict[str, int] = {}
             for k, lv in enumerate(levels):
                 codes[k, j] = col.setdefault(lv[j], len(col))
-        self.model_ = _core.TaxonomyModel(refs, [index[t] for t in tax], codes)
+        unique_to_genus = np.array([index[t] for t in tax], dtype=np.int64)
+        ref_to_genus = unique_to_genus[np.asarray(id_codes, dtype=np.int64)].tolist()
+        self.model_ = _core.TaxonomyModel(
+            refs, ref_to_genus, codes, n_threads=effective_n_jobs(self.n_jobs)
+        )
         self.genera_ = genera
         self.levels_ = levels
         self.n_levels_ = td
