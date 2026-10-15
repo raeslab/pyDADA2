@@ -159,3 +159,21 @@ def test_read_fasta_non_ascii_raises_like_dnaio(tmp_path, content):
     p.write_bytes(content.encode("utf-8"))
     with pytest.raises(dnaio.exceptions.FastaFormatError, match="must be ASCII encoded"):
         read_fasta(p)
+
+
+def test_gc_paused_restores_state():
+    import gc
+
+    from pydada2.io import gc_paused
+
+    assert gc.isenabled()
+    with gc_paused():
+        assert not gc.isenabled()
+    assert gc.isenabled()
+    gc.disable()
+    try:
+        with gc_paused():
+            pass
+        assert not gc.isenabled()  # a disabled collector stays disabled
+    finally:
+        gc.enable()

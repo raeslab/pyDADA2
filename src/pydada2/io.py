@@ -7,6 +7,8 @@ Solexa/Illumina 1.3-1.7) is detected per chunk exactly like ShortRead's ``qualit
 
 from __future__ import annotations
 
+import contextlib
+import gc
 import io
 import os
 import re
@@ -185,6 +187,22 @@ def list_fastq(
     return sorted(p for p in d.iterdir() if p.is_file() and any(r.search(p.name) for r in regs))
 
 
+@contextlib.contextmanager
+def gc_paused() -> Iterator[None]:
+    """Pause the cyclic garbage collector while building many acyclic objects.
+
+    Record lists/tuples of strings cannot form cycles; with a large heap (e.g. after loading a
+    reference database) repeated collections otherwise cost ~10 % of reading a big FASTA file.
+    """
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
+
+
 def read_fasta(path: PathLike, *, raw_ids: bool = False) -> list[tuple[str, str]]:
     """Read a FASTA (or FASTQ) file.
 
@@ -202,7 +220,8 @@ def read_fasta(path: PathLike, *, raw_ids: bool = False) -> list[tuple[str, str]
         ``(id, sequence)`` pairs; sequences are upper-cased.
     """
     if _starts_with_fasta_header(path):
-        return _read_fasta_lines(path, raw_ids)
+        with gc_paused():
+            return _read_fasta_lines(path, raw_ids)
     with dnaio.open(os.fspath(path), mode="r") as reader:  # FASTQ (or unrecognised: dnaio errors)
         return [(rec.name, s if (s := rec.sequence).isupper() else s.upper()) for rec in reader]
 

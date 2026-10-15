@@ -21,7 +21,7 @@ from . import _core
 from ._base import BaseEstimator
 from ._parallel import effective_n_jobs
 from ._validation import PathLike, check_is_fitted
-from .io import read_fasta
+from .io import gc_paused, read_fasta
 from .sequences import get_sequences, reverse_complement
 
 __all__ = [
@@ -430,7 +430,8 @@ class SpeciesAssigner(BaseEstimator):
         if not records:
             raise ValueError("Empty species reference.")
         ids = [i for i, _ in records]
-        fields = [_r_split_ws(i) for i in ids]
+        with gc_paused():
+            fields = [_r_split_ws(i) for i in ids]
         if len(fields[0]) < 3:
             if ids[0].count(";") >= 3:
                 raise ValueError(
