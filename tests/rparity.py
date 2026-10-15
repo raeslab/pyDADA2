@@ -8,6 +8,7 @@ from __future__ import annotations
 import gzip
 import json
 from functools import cache
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,8 @@ import numpy as np
 
 DATA = Path(__file__).parent / "reference" / "data"
 INPUTS = DATA / "inputs"
-EXTDATA = Path(__file__).parents[1] / "src" / "pydada2" / "data" / "extdata"
+# Example data as installed with the package (so the suite also runs against a built wheel).
+EXTDATA = Path(str(files("pydada2") / "data" / "extdata"))
 
 
 @cache

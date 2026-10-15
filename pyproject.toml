@@ -23,7 +23,8 @@ dependencies = [
   "numpy>=1.26",
   "pandas>=2.2",
   "dnaio>=1.2",
-  "scikit-misc>=0.5",
+  "xopen>=1.4",  # gzip output (io.py); also a dnaio dependency
+  "scikit-misc>=0.5.1",  # 0.5.0 is yanked (broken with numpy 1.x)
 ]
 
 [project.urls]
@@ -66,8 +67,8 @@ editable.rebuild = true
 editable.verbose = false
 wheel.py-api = "cp312"  # abi3 wheels for CPython >= 3.12 (nanobind STABLE_ABI); per-version for 3.11
 sdist.exclude = [
-  "reference/", "tests/", "benchmarks/", ".devcontainer/", ".github/", "scripts/", "build/",
-  "spec.md", "CLAUDE.md", "Dockerfile", ".dockerignore", ".pre-commit-config.yaml", ".clangd",
+  "reference/", "/tests/", "benchmarks/", ".devcontainer/", ".github/", "scripts/", "build/",
+  "spec.md", "CLAUDE.md", "REVIEW.md", "Dockerfile", ".dockerignore", ".pre-commit-config.yaml", ".clangd",
 ]
 
 [tool.scikit-build.cmake.define]
@@ -90,7 +91,9 @@ markers = [
 source = ["pydada2"]
 
 [tool.coverage.report]
-fail_under = 90  # ramped: 60 after phase 3, 80 after phase 7, 90 from phase 9
+# The 90 % gate (spec §8.1) applies to the full run only, so it is passed on the command line
+# (`pytest -m "not slow" --cov-fail-under=90`: CI and the pre-commit hook). Marker subsets such as
+# `pytest -m parity` or `-m slow` report coverage but do not fail on it.
 exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "@overload"]
 
 [tool.ruff]

@@ -20,7 +20,7 @@ repos:
         types_or: [python, pyi]
       - id: pytest-fast
         name: pytest (not slow)
-        entry: uv run pytest -m "not slow" -q -p no:cacheprovider
+        entry: uv run pytest -m "not slow" -q -p no:cacheprovider --cov-fail-under=90
         language: system
         pass_filenames: false
         stages: [pre-push]
