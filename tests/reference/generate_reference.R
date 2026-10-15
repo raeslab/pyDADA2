@@ -797,4 +797,91 @@ wj(list(default = derep_list(derepFastq(inp("derep_iupac.fastq.gz"))),
         cov_F = derep_list(derepFastq(covF)),
         cov_F_n37 = derep_list(derepFastq(covF, n = 37))), "derep_coverage")
 
+# ======================================== coverage: chimera methods (T4) ===
+# A 5-sample table on which the removal methods and the consensus options disagree, a DADA
+# result with real (injected) chimeras, and shifted/contained sequences for isShiftDenovo.
+log_msg("coverage: chimeras")
+tp <- colnames(seqtab)[1:6]
+mkchim <- function(a, b, brk) paste0(substr(a, 1, brk), substr(b, brk + 1, nchar(b)))
+# (tp1/tp3 and tp2/tp4 differ only at 1-2 positions; breakpoints are chosen so that each
+# chimera differs from both parents on both sides.)
+cA <- mkchim(tp[1], tp[2], 120)  # parents everywhere: flagged by every method
+cB <- mkchim(tp[2], tp[3], 120)  # parent tp3 in 3/5 samples: minSampleFraction/ignoreNNegatives
+cC <- mkchim(tp[4], tp[1], 120)  # parent tp4 in 4/5 samples: ignoreNNegatives
+cD <- mkchim(tp[5], tp[6], 140)  # abundant; parents only in sample 5: per-sample only
+cE <- mut(cA, 200, ifelse(substr(cA, 200, 200) == "A", "C", "A"))  # one-off: allowOneOff
+ch_seqs <- c(tp, cA, cB, cC, cD, cE)
+stopifnot(!anyDuplicated(ch_seqs))
+cm <- matrix(c(500L, 400L, 300L, 200L,   0L,   0L, 20L, 15L, 10L, 300L, 8L,
+               450L, 350L, 250L, 150L,   0L,   0L, 18L, 12L,  9L, 280L, 0L,
+               400L, 300L, 200L, 100L,   0L,   0L, 15L, 10L,  8L, 250L, 0L,
+               350L, 250L,   0L,  90L,   0L,   0L, 12L, 10L,  7L, 260L, 0L,
+               300L, 200L,   0L,   0L, 400L, 350L, 10L,  8L,  6L,  10L, 0L),
+             nrow = 5, byrow = TRUE, dimnames = list(paste0("s", 1:5), ch_seqs))
+table_opts <- list(
+  default = list(),
+  msf05 = list(minSampleFraction = 0.5),
+  ignore0 = list(ignoreNNegatives = 0),
+  ignore2 = list(ignoreNNegatives = 2),
+  oneoff = list(allowOneOff = TRUE),
+  fold3 = list(minFoldParentOverAbundance = 3),
+  minab250 = list(minParentAbundance = 250),
+  shift2 = list(maxShift = 2)
+)
+tab_calls <- lapply(table_opts, function(o) unname(do.call(isBimeraDenovoTable, c(list(cm), o))))
+pooled_opts <- list(default = list(), oneoff = list(allowOneOff = TRUE),
+                    fold1 = list(minFoldParentOverAbundance = 1), minab500 = list(minParentAbundance = 500))
+cm_tot <- setNames(as.integer(colSums(cm)), colnames(cm))
+pooled_calls <- lapply(pooled_opts, function(o) unname(do.call(isBimeraDenovo, c(list(cm_tot), o))))
+rm_cons <- removeBimeraDenovo(cm, method = "consensus")
+rm_pool <- removeBimeraDenovo(cm, method = "pooled")
+rm_ps <- removeBimeraDenovo(cm, method = "per-sample")
+rm_ps_oneoff <- removeBimeraDenovo(cm, method = "per-sample", allowOneOff = TRUE)
+# The methods/options must disagree on this table (otherwise the fixture pins nothing).
+stopifnot(!identical(colnames(rm_cons), colnames(rm_pool)),
+          !identical(rm_cons, rm_ps[, colnames(rm_ps) %in% colnames(rm_cons), drop = FALSE]) ||
+            !identical(colnames(rm_cons), colnames(rm_ps)),
+          !identical(tab_calls$default, tab_calls$msf05), !identical(tab_calls$default, tab_calls$ignore0),
+          !identical(tab_calls$default, tab_calls$ignore2), !identical(tab_calls$default, tab_calls$oneoff),
+          !identical(pooled_calls$default, pooled_calls$oneoff))
+bt <- dada2:::C_table_bimera2(cm, colnames(cm), 1.5, 2, FALSE, 4, 5L, -4L, -8L, 16)
+
+# DADA on reads with injected chimeras: isBimeraDenovo on a dada object with positives.
+set.seed(2026)
+fqF1 <- readFastq(filtF[[1]])
+asv1 <- getSequences(ddF$sam1)
+chim_reads <- c(rep(mkchim(asv1[1], asv1[2], 110), 40), rep(mkchim(asv1[3], asv1[1], 150), 25))
+donor <- sample(length(fqF1), length(chim_reads))
+write_fq_text(c(as.character(id(fqF1)), sprintf("chimera%03d", seq_along(chim_reads))),
+              c(as.character(sread(fqF1)), chim_reads),
+              c(as.character(quality(quality(fqF1))), as.character(quality(quality(fqF1[donor])))),
+              inp("chimeric_sam1F.fastq.gz"))
+dd_chim <- suppressMessages(dada(derepFastq(inp("chimeric_sam1F.fastq.gz")), err = errBalancedF,
+                                 multithread = FALSE, verbose = FALSE))
+bim_dada <- unname(isBimeraDenovo(dd_chim))
+stopifnot(any(bim_dada))
+
+# isShiftDenovo: shifted copies with long / short overlaps and contained subsequences.
+sh_unq <- getUniques(ddF$sam1)[1:6]
+s1 <- names(sh_unq)[1]; s2 <- names(sh_unq)[2]
+flank <- substr(phix_seq, 1001, 1150)  # unrelated sequence
+shifted <- c(paste0(flank, substr(s1, 1, 90)),                    # 90-nt overlap with s1
+             paste0("ACGTA", substr(s1, 1, 235)),                 # 235-nt overlap
+             substr(s2, 21, 220),                                  # contained in s2
+             substr(s1, 1, 230))                                   # prefix of s1
+sh_all <- c(sh_unq, setNames(c(4L, 3L, 3L, 2L), shifted))
+shift_calls <- list(default = unname(isShiftDenovo(sh_all)),
+                    ov100 = unname(isShiftDenovo(sh_all, minOverlap = 100)),
+                    subseqs = unname(isShiftDenovo(sh_all, flagSubseqs = TRUE)))
+stopifnot(!identical(shift_calls$default, shift_calls$ov100))
+
+wj(list(table = mat_list(cm), table_opts = table_opts, table_calls = tab_calls,
+        table_bimera = df_list(bt), pooled_opts = pooled_opts, pooled_calls = pooled_calls,
+        remove_consensus = mat_list(rm_cons), remove_pooled = mat_list(rm_pool),
+        remove_per_sample = mat_list(rm_ps), remove_per_sample_oneoff = mat_list(rm_ps_oneoff),
+        dada_chim = list(denoised = unq_list(dd_chim$denoised), is_bimera = bim_dada,
+                         is_bimera_oneoff = unname(isBimeraDenovo(dd_chim, allowOneOff = TRUE)),
+                         removed = unq_list(removeBimeraDenovo(dd_chim))),
+        shift = list(uniques = unq_list(sh_all), calls = shift_calls)), "chimera_coverage")
+
 log_msg("done")
