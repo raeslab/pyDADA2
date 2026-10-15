@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import itertools
 import warnings
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -462,7 +462,9 @@ class ErrorLearner(BaseEstimator):
     omega_c : float, default=0
         ``omega_c`` used while learning (R default for ``learnErrors``).
     params : DadaParams or dict, optional
-        Other DADA parameters (e.g. ``{"band_size": 32}`` for PacBio).
+        Other DADA parameters (e.g. ``{"band_size": 32}`` for PacBio). ``max_consist`` and
+        ``omega_c`` come from the arguments above; giving a different value in ``params``
+        raises ``ValueError``.
     quality_type : {"auto", "FastqQuality", "SFastqQuality"}
         Quality encoding of FASTQ inputs.
     n_jobs : int, optional
@@ -517,7 +519,7 @@ class ErrorLearner(BaseEstimator):
 
         Parameters
         ----------
-        X : path, Dereplication, or sequence of them
+        X : path, Dereplication, or a sequence or mapping (name -> sample) of them
             Samples (FASTQ files are dereplicated as needed).
         y : None
             Ignored.
@@ -534,7 +536,12 @@ class ErrorLearner(BaseEstimator):
         from .derep import Dereplication, derep_fastq
 
         log = logging.getLogger("pydada2")
-        items = [X] if isinstance(X, str | os.PathLike | Dereplication) else list(X)
+        if isinstance(X, str | os.PathLike | Dereplication):
+            items = [X]
+        elif isinstance(X, Mapping):  # R: a named list of derep objects or named file paths
+            items = list(X.values())
+        else:
+            items = list(X)
         if not items:
             raise ValueError("No samples provided.")
         if self.randomize:
@@ -566,11 +573,27 @@ class ErrorLearner(BaseEstimator):
             )
         if self.params is None:
             base = DadaParams()
+            given: dict[str, Any] = {}
         elif isinstance(self.params, DadaParams):
             base = self.params
+            default = DadaParams()
+            given = {
+                k: getattr(base, k)
+                for k in ("max_consist", "omega_c")
+                if getattr(base, k) != getattr(default, k)
+            }
         else:
-            base = DadaParams().replace(**dict(self.params))
-        params = base.replace(max_consist=int(self.max_consist), omega_c=float(self.omega_c))
+            given = dict(self.params)
+            base = DadaParams().replace(**given)
+        own = {"max_consist": int(self.max_consist), "omega_c": float(self.omega_c)}
+        conflicts = sorted(k for k in own if k in given and given[k] != own[k])
+        if conflicts:
+            # R: MAX_CONSIST and OMEGA_C are arguments of learnErrors itself, not DADA options.
+            raise ValueError(
+                f"Set {', '.join(conflicts)} with the ErrorLearner argument(s) of the same name, "
+                "not in params (the values differ)."
+            )
+        params = base.replace(**own)
         dd = DADA(
             err=None,
             error_model=self.error_model,
@@ -598,7 +621,7 @@ def learn_errors(X: Any, /, **kwargs: Any) -> ErrorLearner:
 
     Parameters
     ----------
-    X : path, Dereplication, or sequence of them
+    X : path, Dereplication, or a sequence or mapping of them
         Samples.
     **kwargs
         Parameters of :class:`ErrorLearner`.

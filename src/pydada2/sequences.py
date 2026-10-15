@@ -197,7 +197,8 @@ def get_uniques(obj: Any, /, *, collapse: bool = True) -> pd.Series:
         :class:`~pydada2.Dereplication`, a DADA result, a sequence table, or a DataFrame with
         ``sequence`` and ``abundance`` columns (e.g. merged pairs).
     collapse : bool, default=True
-        Sum the abundances of duplicated sequences.
+        Sum the abundances of duplicated sequences. As in R, the result is then ordered by
+        sequence (otherwise the input order is kept).
 
     Returns
     -------
@@ -212,9 +213,19 @@ def get_uniques(obj: Any, /, *, collapse: bool = True) -> pd.Series:
     unqs = _uniques_from_object(obj)
     unqs.index = unqs.index.astype(str)
     if collapse and unqs.index.has_duplicates:
-        unqs = unqs.groupby(level=0, sort=False).sum()
+        # R: tapply(unqs, names(unqs), sum), i.e. the merged uniques come out sorted by sequence.
+        unqs = unqs.groupby(level=0, sort=True).sum()
     unqs.name = "abundance"
     return unqs.astype(np.int64)
+
+
+def _is_taxonomy_table(obj: Any) -> bool:
+    """Tell whether ``obj`` is a table of names (R: character matrix, sequences as rows)."""
+    return (
+        isinstance(obj, pd.DataFrame)
+        and not {"sequence", "abundance"} <= set(obj.columns)
+        and not all(pd.api.types.is_numeric_dtype(dt) for dt in obj.dtypes)
+    )
 
 
 def get_sequences(obj: Any, /, *, collapse: bool = False) -> list[str]:
@@ -223,10 +234,13 @@ def get_sequences(obj: Any, /, *, collapse: bool = False) -> list[str]:
     Parameters
     ----------
     obj : object
-        A sequence or list of sequences, a FASTA/FASTQ path, or any object accepted by
+        A sequence or list of sequences, a FASTA/FASTQ path, a taxonomy table (sequences as
+        row index, e.g. from :func:`~pydada2.assign_taxonomy`), or any object accepted by
         :func:`get_uniques`.
     collapse : bool, default=False
-        Remove duplicated sequences (keeping the first occurrence).
+        Remove duplicated sequences (keeping the first occurrence; for objects handled by
+        :func:`get_uniques`, merge them). As in R, sequences are de-duplicated before being
+        upper-cased, and the sequences of a file are never de-duplicated.
 
     Returns
     -------
@@ -235,7 +249,7 @@ def get_sequences(obj: Any, /, *, collapse: bool = False) -> list[str]:
 
     Examples
     --------
-    >>> get_sequences(["acgt", "ACGT", "GG"], collapse=True)
+    >>> get_sequences(["ACGT", "GG", "ACGT"], collapse=True)
     ['ACGT', 'GG']
     """
     if isinstance(obj, str | os.PathLike) and Path(obj).is_file():
@@ -244,12 +258,15 @@ def get_sequences(obj: Any, /, *, collapse: bool = False) -> list[str]:
         seqs = [obj]
     elif isinstance(obj, Sequence | np.ndarray | pd.Index) and not isinstance(obj, pd.Series):
         seqs = [str(s) for s in obj]
+        if collapse:
+            seqs = list(dict.fromkeys(seqs))
+    elif _is_taxonomy_table(obj):
+        seqs = [str(s) for s in obj.index]
+        if collapse:
+            seqs = list(dict.fromkeys(seqs))
     else:
         seqs = list(get_uniques(obj, collapse=collapse).index)
-    seqs = [s.upper() for s in seqs]
-    if collapse:
-        seqs = list(dict.fromkeys(seqs))
-    return seqs
+    return [s.upper() for s in seqs]
 
 
 def uniques_to_fasta(

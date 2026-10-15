@@ -110,7 +110,7 @@ def derep_fastq(
     FileNotFoundError
         If a file does not exist.
     ValueError
-        If a chunk contains only zero-length sequences.
+        If a file has no reads, or a chunk contains only zero-length sequences (as in R).
 
     Examples
     --------
@@ -130,8 +130,12 @@ def _derep_one(path: Path, n: int, quality_type: QualityType, verbose: int) -> D
     if verbose:
         logger.info("Dereplicating sequence entries in FASTQ file: %s", path)
     drp = _core.Dereplicator()
+    n_chunks = 0
     for chunk in read_fastq_chunks(path, n=n, quality_type=quality_type):
         drp.add_chunk(chunk.seqs, chunk.quals, chunk.offset)
+        n_chunks += 1
+    if n_chunks == 0:  # R: the first (empty) chunk fails in qtables2
+        raise ValueError("Only zero-length sequences detected during dereplication.")
     res = drp.finish()
     if res["n_zero_length"]:
         warnings.warn(

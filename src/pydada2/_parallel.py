@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import numbers
 import os
+
+import numpy as np
 
 __all__ = ["effective_n_jobs"]
 
@@ -13,8 +16,8 @@ def effective_n_jobs(n_jobs: int | None) -> int:
     Parameters
     ----------
     n_jobs : int or None
-        ``None`` means 1. Negative values count back from the number of CPUs
-        (``-1`` = all CPUs, ``-2`` = all but one), as in scikit-learn.
+        Any integer, NumPy integers included. ``None`` means 1. Negative values count back
+        from the number of CPUs (``-1`` = all CPUs, ``-2`` = all but one), as in scikit-learn.
 
     Returns
     -------
@@ -28,8 +31,9 @@ def effective_n_jobs(n_jobs: int | None) -> int:
     """
     if n_jobs is None:
         return 1
-    if isinstance(n_jobs, bool) or not isinstance(n_jobs, int):
+    if isinstance(n_jobs, bool | np.bool_) or not isinstance(n_jobs, numbers.Integral):
         raise ValueError(f"n_jobs must be an int or None, got {n_jobs!r}.")
+    n_jobs = int(n_jobs)
     if n_jobs == 0:
         raise ValueError("n_jobs == 0 has no meaning; use None, a positive int or -1.")
     if n_jobs > 0:

@@ -320,6 +320,14 @@ def assign_taxonomy(
     return clf.predict(seqs, return_bootstrap=output_bootstraps)
 
 
+def _r_split_ws(s: str) -> list[str]:
+    r"""R's ``strsplit(s, "\\s")``: empty fields are kept, except a single trailing one."""
+    parts = re.split(r"[ \t\n\r\f\v]", s)
+    if parts[-1] == "":
+        parts.pop()
+    return parts
+
+
 def _map_hits(hits: list[int], names: list[str | None], keep: float, sep: str = "/") -> str | None:
     """R's ``mapHits``: NA counts as a distinct value but is dropped when pasting."""
     vals = [names[h] for h in hits]
@@ -330,8 +338,8 @@ def _map_hits(hits: list[int], names: list[str | None], keep: float, sep: str = 
     distinct = {v for v in vals}
     if len(distinct) > keep:
         return None
-    joined = sep.join(sorted(v for v in distinct if v is not None))
-    return joined or None
+    present = sorted(v for v in distinct if v is not None)
+    return sep.join(present) if present else None  # an empty name ("") stays "", as in R
 
 
 def _match_genera(gen_tax: Any, gen_binom: Any, split_glyph: str = "/") -> bool:
@@ -401,18 +409,21 @@ class SpeciesAssigner(BaseEstimator):
         ValueError
             If the file is not in the species-reference format.
         """
-        records = _read_reference(ref)
+        if isinstance(ref, list | tuple):
+            records = [(str(i), str(s).upper()) for i, s in ref]
+        else:  # R's readFasta keeps the ids verbatim (trailing whitespace makes empty fields)
+            records = read_fasta(ref, raw_ids=True)  # type: ignore[arg-type]
         if not records:
             raise ValueError("Empty species reference.")
         ids = [i for i, _ in records]
-        if len(re.split(r"\s", ids[0])) < 3:
+        fields = [_r_split_ws(i) for i in ids]
+        if len(fields[0]) < 3:
             if ids[0].count(";") >= 3:
                 raise ValueError(
                     "Incorrect reference file format for assign_species (this looks like a file "
                     "formatted for assign_taxonomy)."
                 )
             raise ValueError("Incorrect reference file format for assign_species.")
-        fields = [re.split(r"\s", i) for i in ids]
         self.genus_ = [f[1] if len(f) > 1 else None for f in fields]
         self.species_ = [f[2] if len(f) > 2 else None for f in fields]
         self.refs_ = [s for _, s in records]

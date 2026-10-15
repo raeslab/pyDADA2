@@ -80,4 +80,5 @@ def test_is_shift_denovo(ch):
     unq = pd.Series(d["uniques"]["abundance"], index=d["uniques"]["sequence"])
     assert is_shift_denovo(unq).tolist() == d["default"]
     assert is_shift_denovo(unq, min_overlap=100).tolist() == d["ov100"]
-    assert is_shift_denovo(unq, flag_subseqs=True).tolist() == d["subseqs"]
+    with pytest.warns(UserWarning, match="no effect"):  # R ignores flagSubseqs
+        assert is_shift_denovo(unq, flag_subseqs=True).tolist() == d["subseqs"]

@@ -7,6 +7,7 @@ Solexa/Illumina 1.3-1.7) is detected per chunk exactly like ShortRead's ``qualit
 
 from __future__ import annotations
 
+import itertools
 import os
 import re
 from collections.abc import Iterable, Iterator, Sequence
@@ -183,13 +184,16 @@ def list_fastq(
     return sorted(p for p in d.iterdir() if p.is_file() and any(r.search(p.name) for r in regs))
 
 
-def read_fasta(path: PathLike) -> list[tuple[str, str]]:
+def read_fasta(path: PathLike, *, raw_ids: bool = False) -> list[tuple[str, str]]:
     """Read a FASTA (or FASTQ) file.
 
     Parameters
     ----------
     path : str or os.PathLike
         File path (optionally compressed).
+    raw_ids : bool, default=False
+        Return FASTA header lines exactly as written (like ShortRead's ``readFasta``), including
+        trailing whitespace, which the default reader removes.
 
     Returns
     -------
@@ -197,7 +201,25 @@ def read_fasta(path: PathLike) -> list[tuple[str, str]]:
         ``(id, sequence)`` pairs; sequences are upper-cased.
     """
     with dnaio.open(os.fspath(path), mode="r") as reader:
-        return [(rec.name, rec.sequence.upper()) for rec in reader]
+        records = [(rec.name, rec.sequence.upper()) for rec in reader]
+    if raw_ids and records:
+        headers = _raw_fasta_headers(path)
+        if headers is not None and len(headers) == len(records):
+            records = [(h, s) for h, (_, s) in zip(headers, records, strict=True)]
+    return records
+
+
+def _raw_fasta_headers(path: PathLike) -> list[str] | None:
+    """Header lines of a FASTA file without the line terminator (None for other formats)."""
+    with xopen(os.fspath(path), "rb") as fh:
+        first = fh.read(1)
+        if first != b">":
+            return None
+        out = []
+        for line in itertools.chain([b">" + fh.readline()], fh):
+            if line.startswith(b">"):
+                out.append(line[1:].rstrip(b"\r\n").decode("latin-1"))
+        return out
 
 
 def write_fasta(

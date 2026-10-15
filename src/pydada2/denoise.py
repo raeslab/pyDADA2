@@ -448,7 +448,7 @@ class DADA(BaseEstimator):
         dereps, names = _as_dereps(X)
         n_threads = effective_n_jobs(self.n_jobs)
         verbose = int(self.verbose)
-        priors = set(get_sequences(list(self.priors))) if len(self.priors) else set()
+        priors = set(get_sequences(self.priors))  # R: getSequences(priors) (str, path, objects)
 
         pool, pseudo = self.pool, False
         if len(dereps) <= 1:

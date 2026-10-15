@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import math
+import numbers
 import re
 import warnings
 from collections.abc import Sequence
@@ -92,20 +93,31 @@ def _as_pair(value: Any, name: str) -> tuple[Any, Any]:
     raise ValueError(f"{name} must be a scalar or a (forward, reverse) pair.")
 
 
+_INT_MIN, _INT_MAX = -(2**31), 2**31 - 1
+# Thresholds that are only compared with read properties: R accepts +-Inf for them.
+_INF_OK = ("min_len", "max_n", "min_q")
+
+
 def _make_mate(values: dict[str, Any]) -> _Mate:
+    ints: dict[str, int] = {}
     for key in ("trunc_q", "trunc_len", "min_len", "trim_left", "trim_right", "max_n", "min_q"):
         v = values[key]
-        if isinstance(v, bool) or float(v) != int(v):
+        inf_ok = key in _INF_OK and not isinstance(v, bool) and isinstance(v, numbers.Real)
+        if inf_ok and math.isinf(float(v)):
+            ints[key] = _INT_MAX if float(v) > 0 else _INT_MIN
+            continue
+        if isinstance(v, bool) or not math.isfinite(float(v)) or float(v) != int(v):
             raise ValueError(f"{key} must be an integer, got {v!r}.")
+        ints[key] = int(v)
     return _Mate(
-        trunc_q=int(values["trunc_q"]),
-        trunc_len=int(values["trunc_len"]),
+        trunc_q=ints["trunc_q"],
+        trunc_len=ints["trunc_len"],
         max_len=float(values["max_len"]),
-        min_len=int(values["min_len"]),
-        trim_left=int(values["trim_left"]),
-        trim_right=int(values["trim_right"]),
-        max_n=int(values["max_n"]),
-        min_q=int(values["min_q"]),
+        min_len=ints["min_len"],
+        trim_left=ints["trim_left"],
+        trim_right=ints["trim_right"],
+        max_n=ints["max_n"],
+        min_q=ints["min_q"],
         max_ee=float(values["max_ee"]),
         rm_phix=bool(values["rm_phix"]),
         rm_lowcomplex=float(values["rm_lowcomplex"]),
@@ -580,12 +592,12 @@ def filter_and_trim(
     max_len : float, default=inf
         Remove reads longer than this (before trimming).
     min_len : int, default=20
-        Remove reads shorter than this (after trimming).
+        Remove reads shorter than this (after trimming). ``-inf``/``inf`` are accepted (as in R).
     max_n : int, default=0
-        Maximum number of non-A/C/G/T bases.
+        Maximum number of non-A/C/G/T bases (``inf``: no limit).
     min_q : int, default=0
         Remove reads with a quality <= ``min_q`` after truncation (only used when
-        ``min_q > trunc_q``, as in R).
+        ``min_q > trunc_q``, as in R). ``-inf``/``inf`` are accepted.
     max_ee : float, default=inf
         Maximum expected errors, ``sum(10**(-Q/10))``.
     rm_phix : bool, default=True

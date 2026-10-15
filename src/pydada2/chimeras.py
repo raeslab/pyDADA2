@@ -7,6 +7,7 @@ R: ``isBimera``, ``isBimeraDenovo``, ``isBimeraDenovoTable``, ``removeBimeraDeno
 from __future__ import annotations
 
 import logging
+import warnings
 from collections.abc import Sequence
 from typing import Any, Literal
 
@@ -250,7 +251,8 @@ def is_shift_denovo(
     min_overlap : int, default=20
         Minimum overlap to call a shift.
     flag_subseqs : bool, default=False
-        Also flag sequences fully contained in a more abundant one.
+        Has no effect, as in R (``isShiftDenovo`` never passes ``flagSubseqs`` on); a warning is
+        issued when True. Sequences contained in a more abundant one are not flagged.
     n_jobs : int, optional
         Threads.
 
@@ -259,6 +261,12 @@ def is_shift_denovo(
     pandas.Series
         Boolean flag per input sequence.
     """
+    if flag_subseqs:
+        warnings.warn(
+            "flag_subseqs has no effect (as in R's isShiftDenovo); contained sequences are not "
+            "flagged.",
+            stacklevel=2,
+        )
     seqs_input = get_sequences(unqs)
     u = get_uniques(unqs)
     flags = np.asarray(
@@ -266,7 +274,7 @@ def is_shift_denovo(
             list(u.index),
             u.to_numpy(dtype=np.int64).tolist(),
             int(min_overlap),
-            bool(flag_subseqs),
+            False,
             effective_n_jobs(n_jobs),
         )
     )
