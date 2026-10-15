@@ -20,6 +20,7 @@ import numpy.typing as npt
 import pandas as pd
 
 from ._base import BaseEstimator
+from ._loess import loess_interpolate_1d
 from ._parallel import effective_n_jobs
 from ._validation import check_is_fitted
 from .io import QualityType
@@ -100,9 +101,29 @@ def _fill_edges(pred: FloatArray) -> FloatArray:
     return pred
 
 
-def _loess_fit(trans: FloatArray, q: FloatArray) -> FloatArray:
+def _skmisc_loess(x: FloatArray, y: FloatArray, w: FloatArray, newx: FloatArray) -> FloatArray:
     from skmisc.loess import loess  # same netlib dloess code as R's stats::loess
 
+    lo = loess(
+        x,
+        y,
+        weights=w,
+        span=0.75,
+        degree=2,
+        family="gaussian",
+        surface="interpolate",
+        statistics="approximate",
+        trace_hat="exact",
+        cell=0.2,
+        iterations=4,
+        normalize=True,
+    )
+    lo.fit()
+    out: FloatArray = np.asarray(lo.predict(newx).values, dtype=np.float64)
+    return out
+
+
+def _loess_fit(trans: FloatArray, q: FloatArray) -> FloatArray:
     est = np.empty((12, trans.shape[1]), dtype=np.float64)
     for k, (i, j) in enumerate(_substitutions()):
         errs = trans[4 * i + j]
@@ -112,24 +133,14 @@ def _loess_fit(trans: FloatArray, q: FloatArray) -> FloatArray:
         ok = np.isfinite(rlogp)
         if ok.sum() < 3:
             raise ValueError("Error rates could not be estimated (too few observations).")
-        lo = loess(
-            q[ok],
-            rlogp[ok],
-            weights=tot[ok],
-            span=0.75,
-            degree=2,
-            family="gaussian",
-            surface="interpolate",
-            statistics="approximate",
-            trace_hat="exact",
-            cell=0.2,
-            iterations=4,
-            normalize=True,
-        )
-        lo.fit()
         pred = np.full(q.size, np.nan)
         inside = (q >= q[ok].min()) & (q <= q[ok].max())  # R's predict() gives NA outside
-        pred[inside] = lo.predict(q[inside]).values  # noqa: PD011 (skmisc object, not pandas)
+        try:
+            pred[inside] = _skmisc_loess(q[ok], rlogp[ok], tot[ok], q[inside])
+        except ValueError:
+            # skmisc aborts on near-singular local fits (few observed quality scores), which R's
+            # loess only warns about (and dada() suppresses): use the same algorithm in NumPy.
+            pred[inside] = loess_interpolate_1d(q[ok], rlogp[ok], tot[ok], q[inside])
         est[k] = 10 ** _fill_edges(pred)
     return _expand(_clamp(est))
 
