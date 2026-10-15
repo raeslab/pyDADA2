@@ -225,13 +225,19 @@ def collapse_no_mismatch(
             seqs, int(min_overlap), bool(vec), int(band), effective_n_jobs(n_jobs)
         )
     )
-    collapsed = pd.DataFrame(0, index=tab.index, columns=tab.columns, dtype=np.int64)
-    kept = set()
-    for q, t in enumerate(target):
-        ref = seqs[t]
-        collapsed[ref] = collapsed[ref].to_numpy() + tab[seqs[q]].to_numpy(dtype=np.int64)
-        kept.add(ref)
-    collapsed = collapsed.loc[:, [c for c in tab.columns if c in kept]]
+    # Column q of the abundance-ordered table is added to column target[q] (vectorised).
+    vals = tab.to_numpy(dtype=np.int64)[:, order]
+    summed = np.zeros_like(vals)
+    np.add.at(summed.T, target.astype(np.intp), vals.T)
+    kept = np.zeros(len(seqs), dtype=bool)
+    kept[target] = True
+    out_vals = np.zeros_like(vals)
+    out_vals[:, order] = summed  # back to the input column order
+    keep_cols = np.zeros(tab.shape[1], dtype=bool)
+    keep_cols[order] = kept
+    collapsed = pd.DataFrame(
+        out_vals[:, keep_cols], index=tab.index, columns=tab.columns[keep_cols], dtype=np.int64
+    )
     collapsed = _order_columns(collapsed, order_by)
     collapsed = _order_columns(collapsed, "abundance")
     if verbose:

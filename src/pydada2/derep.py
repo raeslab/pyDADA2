@@ -6,6 +6,7 @@ import logging
 import os
 import warnings
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import overload
@@ -15,6 +16,7 @@ import numpy.typing as npt
 import pandas as pd
 
 from . import _core
+from ._parallel import effective_n_jobs
 from ._validation import PathLike
 from .io import QualityType, read_fastq_chunks
 
@@ -67,11 +69,23 @@ class Dereplication:
 
 @overload
 def derep_fastq(  # type: ignore[overload-overlap]
-    fls: PathLike, /, *, n: int = ..., quality_type: QualityType = ..., verbose: int = ...
+    fls: PathLike,
+    /,
+    *,
+    n: int = ...,
+    quality_type: QualityType = ...,
+    n_jobs: int | None = ...,
+    verbose: int = ...,
 ) -> Dereplication: ...
 @overload
 def derep_fastq(
-    fls: Sequence[PathLike], /, *, n: int = ..., quality_type: QualityType = ..., verbose: int = ...
+    fls: Sequence[PathLike],
+    /,
+    *,
+    n: int = ...,
+    quality_type: QualityType = ...,
+    n_jobs: int | None = ...,
+    verbose: int = ...,
 ) -> list[Dereplication]: ...
 
 
@@ -81,6 +95,7 @@ def derep_fastq(
     *,
     n: int = 1_000_000,
     quality_type: QualityType = "auto",
+    n_jobs: int | None = None,
     verbose: int = 0,
 ) -> Dereplication | list[Dereplication]:
     """Dereplicate FASTQ file(s) (R: ``derepFastq``).
@@ -97,6 +112,8 @@ def derep_fastq(
         Number of reads per chunk.
     quality_type : {"auto", "FastqQuality", "SFastqQuality"}
         Quality encoding (auto-detected per chunk by default).
+    n_jobs : int, optional
+        Number of files dereplicated concurrently (-1: all CPUs). Results do not depend on it.
     verbose : int, default=0
         Log progress at INFO level when > 0.
 
@@ -121,7 +138,12 @@ def derep_fastq(
     """
     if isinstance(fls, str | os.PathLike):
         return _derep_one(Path(fls), n, quality_type, verbose)
-    return [_derep_one(Path(f), n, quality_type, verbose) for f in fls]
+    paths = [Path(f) for f in fls]
+    workers = min(effective_n_jobs(n_jobs), len(paths))
+    if workers <= 1:
+        return [_derep_one(p, n, quality_type, verbose) for p in paths]
+    with ThreadPoolExecutor(max_workers=workers) as pool:  # the C++ kernel releases the GIL
+        return list(pool.map(lambda p: _derep_one(p, n, quality_type, verbose), paths))
 
 
 def _derep_one(path: Path, n: int, quality_type: QualityType, verbose: int) -> Dereplication:

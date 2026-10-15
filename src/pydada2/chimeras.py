@@ -320,7 +320,8 @@ class BimeraRemover(BaseEstimator):
     Attributes
     ----------
     is_bimera_ : pandas.Series or pandas.DataFrame
-        Bimera flags per sequence (per sample and sequence for ``"per-sample"``).
+        Bimera flags per sequence (per sample and sequence for ``"per-sample"``, where
+        sequences absent from a sample are not tested and flagged False).
 
     Examples
     --------
@@ -402,15 +403,17 @@ class BimeraRemover(BaseEstimator):
         elif self.method == "pooled":
             self.is_bimera_ = is_bimera_denovo(seqtab, verbose=self.verbose, **kw)
         else:
-            rows = []
-            for _, row in seqtab.iterrows():
-                u = pd.Series(row.to_numpy(dtype=np.int64), index=[str(c) for c in seqtab.columns])
-                rows.append(is_bimera_denovo(u, verbose=self.verbose, **kw).to_numpy())
-            self.is_bimera_ = pd.DataFrame(
-                np.vstack(rows) if rows else np.zeros((0, seqtab.shape[1]), dtype=bool),
-                index=seqtab.index,
-                columns=seqtab.columns,
-            )
+            # Only the sequences present in a sample are tested: absent ones cannot be parents
+            # (abundance 0) and their counts stay 0, so the transformed table equals R's.
+            cols = [str(c) for c in seqtab.columns]
+            vals = seqtab.to_numpy(dtype=np.int64)
+            flags = np.zeros(vals.shape, dtype=bool)
+            for i in range(vals.shape[0]):
+                present = np.flatnonzero(vals[i])
+                if present.size:
+                    u = pd.Series(vals[i, present], index=[cols[j] for j in present])
+                    flags[i, present] = is_bimera_denovo(u, verbose=self.verbose, **kw).to_numpy()
+            self.is_bimera_ = pd.DataFrame(flags, index=seqtab.index, columns=seqtab.columns)
         return self
 
     def transform(self, seqtab: pd.DataFrame) -> pd.DataFrame:
