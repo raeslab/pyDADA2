@@ -1,19 +1,18 @@
 """Shared inputs for parity tests: filtered + dereplicated example data (as in the R generator)."""
 
-import warnings
-
 import pytest
 
 import pydada2 as dada2
 
-from rparity import EXTDATA
+from rparity import EXTDATA, load, r_warnings
 
 
 @pytest.fixture(scope="session")
 def filtered(tmp_path_factory):
     d = tmp_path_factory.mktemp("filtered")
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
+    fx = load("filter_and_trim")
+    # Same configurations as fixtures F1, P1 and FPB; pydada2 must warn exactly when R does.
+    with r_warnings(fx["F1"]["warnings"] + fx["P1"]["warnings"] + fx["FPB"]["warnings"]):
         f1 = [d / "F1_sam1F.fastq", d / "F1_sam2F.fastq"]
         dada2.filter_and_trim(
             [EXTDATA / "sam1F.fastq.gz", EXTDATA / "sam2F.fastq.gz"], f1, trunc_len=240,
