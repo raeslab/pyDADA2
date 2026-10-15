@@ -665,4 +665,39 @@ rownames(track) <- c("sam1", "sam2")
 wj(list(track = mat_list(track), seqtab_nochim = mat_list(seqtab.nochim),
         taxa = df_list(as.data.frame(unname(taxa50)))), "e2e")
 
+# ================================================= numerics (REVIEW.md fixes) ===
+# Self-contained section with its own seeds, so it does not disturb the fixtures above.
+
+log_msg("ppois extended grid")
+# Poisson upper tail P(X > n): large counts (lambda/n in [0.5, 1.5] and around the mode), small
+# counts, tiny lambda, and a dense grid around the underflow boundary (lambda solved so that
+# log P hits a target): values in R's log-space band (< 1e-292), subnormals and exact zeros.
+set.seed(20261015)
+pp <- list()
+for (n in c(1e3, 2e3, 5e3, 1e4, 3e4, 1e5, 3e5, 1e6, 2e6)) {
+  f <- c(seq(0.5, 1.5, length.out = 41), 1 + c(-8, -5, -3, -2, -1, -0.5, 0.5, 1, 2, 3, 5, 8) / sqrt(n))
+  pp[[length(pp) + 1]] <- data.frame(n = n, lambda = n * f, grp = "large")
+}
+for (n in c(0:30, 40, 50, 75, 100, 200, 500)) {
+  f <- c(0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99, 1, 1.01, 1.1, 1.5, 2, 5)
+  pp[[length(pp) + 1]] <- data.frame(n = n, lambda = (n + 1) * f, grp = "small")
+}
+pp[[length(pp) + 1]] <- data.frame(n = rep(0:10, each = 33), lambda = rep(10^seq(-320, 0, by = 10), 11),
+                                   grp = "tiny")
+solve_lambda <- function(n, target) {
+  f <- function(l) ppois(n, exp(l), lower.tail = FALSE, log.p = TRUE) - target
+  lo <- -800; hi <- log(n + 1)
+  if (f(lo) > 0 || f(hi) < 0) return(NA_real_)
+  exp(uniroot(f, c(lo, hi), tol = 1e-13)$root)
+}
+nb <- 1500
+nn <- c(round(10^runif(nb, 0, log10(2e6))), sample(0:30, nb, replace = TRUE))
+tg <- c(runif(nb / 2, -746, -742.5), runif(nb / 2, -760, -680), runif(nb / 2, -746, -742.5),
+        runif(nb / 2, -760, -680))
+lam <- mapply(solve_lambda, nn, tg)
+pp[[length(pp) + 1]] <- data.frame(n = nn, lambda = lam, grp = "underflow")[is.finite(lam), ]
+pp <- do.call(rbind, pp)
+pp$p_upper <- ppois(pp$n, pp$lambda, lower.tail = FALSE)
+wj(df_list(pp), "ppois_extended")
+
 log_msg("done")

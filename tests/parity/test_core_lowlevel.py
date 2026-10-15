@@ -128,12 +128,38 @@ def test_match_ref():
     assert core.match_ref(d["seqs"], phix, 16, False) == d["match_ref_overlap"]
 
 
+# One unit in the last place of a subnormal double (2**-1074).
+SUBNORMAL_ULP = 5e-324
+
+
+def _check_ppois(ns, lams, ps):
+    """ppois_upper vs R's ppois(lower.tail=FALSE).
+
+    * zero and non-zero results must agree exactly (R keeps subnormal tails);
+    * p >= 1e-292: relative difference <= 1e-12;
+    * p < 1e-292: R recomputes these as exp(log p) and is itself off by up to 1.9e-12 from a
+      45-digit reference there (pydada2: <= 6e-13), so <= 2.5e-12 relative; subnormal results
+      carry fewer bits, so at least one subnormal ulp is allowed.
+    """
+    for n, lam, p in zip(ns, lams, ps, strict=True):
+        got = core.ppois_upper(int(n), lam)
+        assert (got == 0.0) == (p == 0.0), (n, lam, got, p)
+        tol = 1e-12 * p if p >= 1e-292 else max(2.5e-12 * p, SUBNORMAL_ULP)
+        assert abs(got - p) <= tol, (n, lam, got, p)
+
+
 def test_ppois_upper():
     d = load("ppois")
-    for n, lam, p in zip(d["n"], d["lambda"], d["p_upper"], strict=True):
-        got = core.ppois_upper(int(n), lam)
-        # rel 1e-12; subnormal results (< ~1e-305) only carry a few significant digits
-        assert got == pytest.approx(p, rel=1e-12, abs=1e-305), (n, lam)
+    _check_ppois(d["n"], d["lambda"], d["p_upper"])
+
+
+def test_ppois_upper_extended():
+    """Large counts (n up to 2e6, lambda/n in [0.5, 1.5]), small counts, lambda down to 1e-320
+    and a dense grid around the underflow boundary (REVIEW.md 1.1/1.2)."""
+    d = load("ppois_extended")
+    assert sum(p == 0 for p in d["p_upper"]) > 500  # exact zeros near the boundary
+    assert sum(0 < p < 2.2250738585072014e-308 for p in d["p_upper"]) > 1000  # subnormals
+    _check_ppois(d["n"], d["lambda"], d["p_upper"])
 
 
 def test_ppois_upper_edges():
