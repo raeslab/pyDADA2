@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from typing import Any, Literal
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 
 from . import _core
@@ -35,6 +36,23 @@ def _order_columns(tab: pd.DataFrame, order_by: OrderBy) -> pd.DataFrame:
     else:
         raise ValueError("order_by must be 'abundance', 'nsamples' or None.")
     return tab.iloc[:, np.argsort(-key, kind="stable")]
+
+
+def _uniques_arrays(obj: Any) -> tuple[list[str], npt.NDArray[np.int64]]:
+    """Return ``get_uniques(obj)`` as (sequences, abundances).
+
+    Avoids the per-sample pandas overhead for the common inputs (merged pairs, DADA results);
+    the results are identical.
+    """
+    seqs: list[str] | None = None
+    if isinstance(obj, pd.DataFrame) and {"sequence", "abundance"} <= set(obj.columns):
+        seqs, ab = [str(s) for s in obj["sequence"].tolist()], obj["abundance"]
+    elif isinstance(getattr(obj, "denoised", None), pd.Series):  # DadaResult
+        seqs, ab = [str(s) for s in obj.denoised.index], obj.denoised
+    if seqs is not None and len(set(seqs)) == len(seqs):  # duplicates: get_uniques merges them
+        return seqs, ab.to_numpy(dtype=np.int64)
+    u = get_uniques(obj)
+    return [str(s) for s in u.index], u.to_numpy(dtype=np.int64)
 
 
 def make_sequence_table(samples: Any, /, *, order_by: OrderBy = "abundance") -> pd.DataFrame:
@@ -67,14 +85,14 @@ def make_sequence_table(samples: Any, /, *, order_by: OrderBy = "abundance") -> 
         items = list(samples)
     else:
         items = [samples]
-    unqs = [get_uniques(s) for s in items]
+    unqs = [_uniques_arrays(s) for s in items]
     cols: dict[str, int] = {}
-    for u in unqs:
-        for sq in u.index:
-            cols.setdefault(str(sq), len(cols))
+    for seqs, _ in unqs:
+        for sq in seqs:
+            cols.setdefault(sq, len(cols))
     mat = np.zeros((len(unqs), len(cols)), dtype=np.int64)
-    for i, u in enumerate(unqs):
-        mat[i, [cols[str(sq)] for sq in u.index]] = u.to_numpy(dtype=np.int64)
+    for i, (seqs, ab) in enumerate(unqs):
+        mat[i, [cols[sq] for sq in seqs]] = ab
     tab = pd.DataFrame(mat, columns=list(cols))
     if names is not None:
         tab.index = pd.Index(names)
