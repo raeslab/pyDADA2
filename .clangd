@@ -1,0 +1,3 @@
+# clangd: use the compile database written by the editable build (CMAKE_EXPORT_COMPILE_COMMANDS).
+CompileFlags:
+  CompilationDatabase: build/cp312-abi3-linux_x86_64

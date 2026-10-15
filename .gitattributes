@@ -1,0 +1,8 @@
+# Keep LF endings for files executed inside the Linux container (Windows host safety)
+* text=auto eol=lf
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.gz binary
+*.rda binary
+*.npz binary
+*.npy binary

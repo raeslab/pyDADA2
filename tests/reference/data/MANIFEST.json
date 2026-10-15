@@ -1,0 +1,20 @@
+{
+  "dada2_version": "1.36.0",
+  "upstream_repo": "https://github.com/benjjneb/dada2",
+  "upstream_commit": "b61fe2e",
+  "r_version": "R version 4.6.1 (2026-06-24)",
+  "platform": "x86_64-pc-linux-gnu",
+  "packages": {
+    "dada2": "1.36.0",
+    "Rcpp": "1.1.2",
+    "RcppParallel": "6.2.1",
+    "ShortRead": "1.70.0",
+    "Biostrings": "2.80.2",
+    "jsonlite": "2.0.0",
+    "BiocGenerics": "0.58.1",
+    "IRanges": "2.46.0",
+    "XVector": "0.52.0"
+  },
+  "generated": "2026-10-15T10:18:45Z",
+  "seed": 100
+}

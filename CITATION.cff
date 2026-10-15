@@ -1,0 +1,43 @@
+cff-version: 1.2.0
+message: >-
+  pyDADA2 is an unofficial Python port of the DADA2 R package. If you use it, please cite the
+  DADA2 paper (preferred-citation below).
+title: "pyDADA2: exact amplicon sequence variant inference (DADA2) for Python"
+type: software
+license: LGPL-2.0-or-later
+repository-code: "https://github.com/raeslab/pyDADA2"
+version: 0.1.0
+authors:
+  - family-names: Proost
+    given-names: Sebastian
+    email: sebastian.proost@vib.be
+references:
+  - type: software
+    title: dada2
+    version: 1.36.0
+    repository-code: "https://github.com/benjjneb/dada2"
+    authors:
+      - family-names: Callahan
+        given-names: Benjamin J.
+preferred-citation:
+  type: article
+  title: "DADA2: High-resolution sample inference from Illumina amplicon data"
+  authors:
+    - family-names: Callahan
+      given-names: Benjamin J.
+    - family-names: McMurdie
+      given-names: Paul J.
+    - family-names: Rosen
+      given-names: Michael J.
+    - family-names: Han
+      given-names: Andrew W.
+    - family-names: Johnson
+      given-names: Amy Jo A.
+    - family-names: Holmes
+      given-names: Susan P.
+  journal: Nature Methods
+  volume: 13
+  start: 581
+  end: 583
+  year: 2016
+  doi: 10.1038/nmeth.3869

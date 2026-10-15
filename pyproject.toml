@@ -1,0 +1,129 @@
+[build-system]
+requires = ["scikit-build-core>=0.11", "nanobind>=2.4"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "pydada2"  # NOTE: name taken on PyPI by another project (spec Q1); placeholder
+version = "0.1.0"
+description = "Exact amplicon sequence variant inference (DADA2) for Python"
+readme = "README.md"
+license = "LGPL-2.0-or-later"  # placeholder, see spec Q9
+license-files = ["LICENSE"]
+authors = [{ name = "Sebastian Proost", email = "sebastian.proost@vib.be" }]
+requires-python = ">=3.11"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: C++",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+]
+dependencies = [
+  "numpy>=1.26",
+  "pandas>=2.2",
+  "dnaio>=1.2",
+  "scikit-misc>=0.5",
+]
+
+[project.urls]
+Homepage = "https://github.com/raeslab/pyDADA2"
+Source = "https://github.com/raeslab/pyDADA2"
+Upstream = "https://github.com/benjjneb/dada2"
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.8"]
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "pytest-cov>=5",
+  "pytest-xdist>=3",
+  "pytest-benchmark>=4",
+  "hypothesis>=6",
+  "ruff>=0.6",
+  "mypy>=1.11",
+  "pandas-stubs>=2.2",
+  "scikit-learn>=1.5",
+  "matplotlib>=3.8",
+  "pre-commit>=3",
+  # build backend + bindings, needed in the env for editable rebuilds (no build isolation)
+  "scikit-build-core>=0.11",
+  "nanobind>=2.4",
+]
+
+[tool.uv]
+no-build-isolation-package = ["pydada2"]
+# Supply-chain hygiene: ignore releases newer than this date when locking.
+exclude-newer = "2026-10-01T00:00:00Z"
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+build-dir = "build/{wheel_tag}"
+cmake.build-type = "Release"
+wheel.packages = ["src/pydada2"]
+editable.rebuild = true
+editable.verbose = false
+wheel.py-api = "cp312"  # abi3 wheels for CPython >= 3.12 (nanobind STABLE_ABI); per-version for 3.11
+sdist.exclude = [
+  "reference/", "tests/", "benchmarks/", ".devcontainer/", ".github/", "scripts/", "build/",
+  "spec.md", "CLAUDE.md", "Dockerfile", ".dockerignore", ".pre-commit-config.yaml", ".clangd",
+]
+
+[tool.scikit-build.cmake.define]
+DADA2_ENABLE_COVERAGE = { env = "DADA2_ENABLE_COVERAGE", default = "OFF" }
+DADA2_BUILD_CPP_TESTS = { env = "DADA2_BUILD_CPP_TESTS", default = "OFF" }
+DADA2_FETCH_BOOST = { env = "DADA2_FETCH_BOOST", default = "ON" }
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers --cov=pydada2 --cov-branch --cov-report=term-missing -m 'not bench' --doctest-modules --import-mode=importlib"
+testpaths = ["tests", "src/pydada2"]
+doctest_optionflags = ["NORMALIZE_WHITESPACE", "ELLIPSIS"]
+pythonpath = ["tests"]
+markers = [
+  "parity: compares against fixtures generated from the R package",
+  "slow: long-running (full pipeline)",
+  "bench: micro-benchmarks (not run by default)",
+]
+
+[tool.coverage.run]
+source = ["pydada2"]
+
+[tool.coverage.report]
+fail_under = 90  # ramped: 60 after phase 3, 80 after phase 7, 90 from phase 9
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "@overload"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["reference", "*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "SIM", "RUF", "NPY", "PD", "D"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pydada2"]
+known-local-folder = ["rparity"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.lint.extend-per-file-ignores]
+"src/**" = [
+  "D105",  # magic methods (__len__, __repr__) need no docstring
+  "N803",  # `X` argument name (scikit-learn convention)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D", "N806"]  # tests mirror R variable names (ddF, dR, ...)
+"benchmarks/**" = ["D"]
+"scripts/**" = ["D"]
+"src/pydada2/_core.pyi" = ["D", "N"]
+
+[tool.mypy]
+strict = true
+files = ["src"]
+
+[[tool.mypy.overrides]]
+module = ["skmisc.*", "dnaio.*"]
+ignore_missing_imports = true

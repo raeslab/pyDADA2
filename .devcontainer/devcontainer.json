@@ -1,0 +1,16 @@
+// Dev container for porting DADA2 (R + C++) to the pyDADA2 Python package. See spec.md §0/§2.
+{
+	"name": "pyDADA2",
+	"build": {
+		"context": "..",
+		"dockerfile": "../Dockerfile"
+	},
+	"remoteUser": "vscode",
+	// Named volumes keep the Claude login, caches and the R library across rebuilds.
+	"mounts": [
+		"source=pydada2-claude,target=/home/vscode/.claude,type=volume",
+		"source=pydada2-cache,target=/home/vscode/.cache,type=volume",
+		"source=pydada2-rlib,target=/home/vscode/R/library,type=volume"
+	],
+	"postCreateCommand": "bash scripts/devcontainer-post-create.sh"
+}

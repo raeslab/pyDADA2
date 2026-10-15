@@ -1,0 +1,274 @@
+// Adapted from DADA2 src/Rmain.cpp (https://github.com/benjjneb/dada2, commit b61fe2e, v1.36.0).
+// Copyright (C) Benjamin Callahan et al. Licensed under the LGPL (see LICENSE).
+//
+// Changes for pydada2:
+//  * dada_uniques takes/returns plain C++ types (api.h); 0-based indices, -1 for NA.
+//  * multithread flag -> n_threads (dada2::parallel_for); b_compare/b_compare_parallel merged.
+//  * Quality matrix is nraw x maxlen row-major (R passed the transpose, column-major).
+//  * Additional input validation (non-ACGT, abundances, NaN/out-of-range qualities) that upstream
+//    performed R-side.
+//  * Exception-safe ownership of raws/B/subs (DadaState); Rcpp::checkUserInterrupt ->
+//    dada2_check_interrupt (handler installed by the bindings).
+//  * SSE is no longer forced to 0 on non-x86 (exact scalar emulation in kmers.cpp).
+#include <memory>
+
+#include "api.h"
+#include "dada.h"
+#include "output.h"
+#include "parallel.h"
+
+B *run_dada(Raw **raws, int nraw, const ErrMat &errMat,
+            int match, int mismatch, int gap_pen, int homo_gap_pen, bool use_kmers, double kdist_cutoff, int band_size,
+            double omegaA, double omegaP, bool detect_singletons,
+            int max_clust, double min_fold, int min_hamming, int min_abund,
+            bool use_quals, bool final_consensus, bool vectorized_alignment, int n_threads, bool verbose,
+            int SSE, bool gapless, bool greedy);
+
+namespace {
+
+// Owns the C-style objects of one dada_uniques call so that they are released when an
+// exception propagates (upstream relied on R's longjmp and leaked on Rcpp::stop).
+struct DadaState {
+  std::vector<Raw *> raws;
+  B *bb = nullptr;
+  std::vector<Sub *> subs;
+  std::vector<Sub *> birth_subs;
+  std::vector<uint8_t> k8;
+  std::vector<uint16_t> k16;
+  std::vector<uint16_t> kord;
+  ~DadaState() {
+    for(Sub *s : subs) sub_free(s);
+    for(Sub *s : birth_subs) sub_free(s);
+    if(bb) b_free(bb);
+    for(Raw *r : raws) if(r) raw_free(r);
+  }
+};
+
+}  // namespace
+
+namespace dada2 {
+
+//------------------------------------------------------------------
+// C interface to run DADA on the provided unique sequences/abundance pairs (was the Rcpp
+// export dada_uniques). err: 16 x err_ncol row-major; quals: nraw x quals_ncol row-major.
+DadaOutput dada_uniques(const std::vector<std::string> &seqs, const std::vector<int> &abundances,
+                        const std::vector<bool> &priors, const double *err, int err_ncol,
+                        const double *quals, int quals_ncol, const DadaOptions &opt, int n_threads,
+                        bool verbose) {
+  unsigned int i, r, index, pos, nraw, maxlen, minlen;
+  Raw *raw;
+  int SSE = opt.sse;
+
+  /********** INPUT VALIDATION *********/
+  // Check lengths of seqs and abundances vectors
+  nraw = seqs.size();
+  if(nraw == 0) { dada2_stop_invalid("Zero input sequences."); }
+  if(nraw != abundances.size()) { dada2_stop_invalid("Sequence and abundance vectors had different lengths."); }
+  if(nraw != priors.size()) { dada2_stop_invalid("Sequence and priors vectors had different lengths."); }
+  maxlen=0;
+  minlen=SEQLEN;
+  for(index=0;index<nraw;index++) {
+    if(seqs[index].length() > maxlen) { maxlen = seqs[index].length(); }
+    if(seqs[index].length() < minlen) { minlen = seqs[index].length(); }
+  }
+  if(maxlen >= SEQLEN) { dada2_stop_invalid("Input sequences exceed the maximum allowed string length."); }
+  if(minlen <= KMER_SIZE) { dada2_stop_invalid("Input sequences must all be longer than the kmer-size (%i).", KMER_SIZE); }
+  for(index=0;index<nraw;index++) {
+    if(abundances[index] < 1) { dada2_stop_invalid("Abundances must be positive integers."); }
+  }
+  for(bool ok : is_acgt(seqs)) {
+    if(!ok) { dada2_stop_invalid("Sequences must contain only A/C/G/T characters."); }
+  }
+
+  // Check for presence of quality scores and their lengths
+  bool has_quals = false;
+  if(quals && quals_ncol > 0) { // Each sequence is a ROW, each column is a POSITION
+    has_quals = true;
+    if((unsigned int)quals_ncol != maxlen) {
+      dada2_stop_invalid("Sequence must have associated qualities for each nucleotide position.");
+    }
+  }
+  // Check error matrix
+  if(err == nullptr || err_ncol < 1) {
+    dada2_stop_invalid("Error matrix must have 16 rows and at least one column.");
+  }
+  ErrMat errMat{err, (unsigned int)err_ncol};
+  if(has_quals) {
+    for(index=0;index<nraw;index++) {
+      for(pos=0;pos<seqs[index].length();pos++) {
+        double q = quals[(size_t)index*quals_ncol + pos];
+        if(!(q >= 0) || round(q) > 255) { dada2_stop_invalid("Invalid quality score (must be in 0..255, no NaN)."); }
+      }
+    }
+  }
+  // pydada2: upstream set SSE=0 on non-x86; kmers.cpp provides exact scalar emulations of the
+  // SSE2 routines instead, so SSE modes give x86-identical results on every platform.
+
+  DadaState st;
+  /********** CONSTRUCT RAWS *********/
+  char seq[SEQLEN];
+  double qual[SEQLEN];
+  st.raws.assign(nraw, nullptr);
+  Raw **raws = st.raws.data();
+  // Construct a raw for each input sequence, store in raws[index]
+  for (index = 0; index < nraw; index++) {
+    strcpy(seq, seqs[index].c_str());
+    nt2int(seq, seq);
+    if(has_quals) {
+      for(pos=0;pos<seqs[index].length();pos++) {
+        qual[pos] = quals[(size_t)index*quals_ncol + pos];
+      }
+      raws[index] = raw_new(seq, qual, abundances[index], priors[index]);
+    } else {
+      raws[index] = raw_new(seq, NULL, abundances[index], priors[index]);
+    }
+    raws[index]->index = index;
+  }
+
+  if(opt.use_kmers) {
+    /// Add uint8_t kmer index in contiguous memory block
+    size_t n_kmer = 1 << (2*KMER_SIZE);
+    st.k8.assign(nraw * n_kmer, 0);
+    for(index=0;index<nraw;index++) {
+      raw = raws[index];
+      raw->kmer8 = &st.k8[index*n_kmer];
+      assign_kmer8(raw->kmer8, raw->seq, KMER_SIZE);
+    }
+
+    /// Add uint16_t kmer index in contiguous memory block
+    st.k16.assign(nraw * n_kmer, 0);
+    for(index=0;index<nraw;index++) {
+      raw = raws[index];
+      raw->kmer = &st.k16[index*n_kmer];
+      assign_kmer(raw->kmer, raw->seq, KMER_SIZE);
+    }
+
+    /// Add uint16_t ordered kmer record in contiguous memory block
+    st.kord.assign((size_t)nraw * maxlen + 8, 0); // +8: SSE loads read whole 8-element blocks
+    for(index=0;index<nraw;index++) {
+      raw = raws[index];
+      raw->kord = &st.kord[(size_t)index*maxlen];
+      assign_kmer_order(raw->kord, raw->seq, KMER_SIZE);
+    }
+  } else {
+    for(index=0;index<nraw;index++) {
+      raw = raws[index];
+      raw->kmer8 = NULL;
+      raw->kmer = NULL;
+      raw->kord = NULL;
+    }
+  }
+
+  int match = opt.match, mismatch = opt.mismatch, gap = opt.gap, homo_gap = opt.homo_gap;
+  int band_size = opt.band_size;
+  bool use_kmers = opt.use_kmers, vectorized_alignment = opt.vectorized_alignment, gapless = opt.gapless;
+
+  /********** RUN DADA *********/
+  st.bb = run_dada(raws, nraw, errMat,
+                   match, mismatch, gap, homo_gap, use_kmers, opt.kdist_cutoff, band_size,
+                   opt.omega_a, opt.omega_p, opt.detect_singletons,
+                   opt.max_clust, opt.min_fold, opt.min_hamming, opt.min_abund, opt.use_quals, opt.final_consensus,
+                   vectorized_alignment, n_threads, verbose, SSE, gapless, opt.greedy);
+  B *bb = st.bb;
+
+  /********** MAKE OUTPUT *********/
+  // Create subs for all the relevant alignments
+  st.subs.assign(bb->nraw, nullptr);
+  st.birth_subs.assign(bb->nclust, nullptr);
+  Sub **subs = st.subs.data();
+  Sub **birth_subs = st.birth_subs.data();
+
+  // Parallelize over clusters (was FinalSubsParallel); each cluster writes only its own slots.
+  auto final_subs = [&](std::size_t begin, std::size_t end) {
+    Raw *raw;
+    for(std::size_t i=begin;i<end;i++) {
+      for(unsigned int r=0;r<bb->bi[i]->nraw;r++) {
+        raw = bb->bi[i]->raw[r];
+        subs[raw->index] = sub_new(bb->bi[i]->center, raw, match, mismatch, gap, homo_gap, false, 1.0, band_size, vectorized_alignment, SSE, gapless);
+      }
+      // Make birth sub for that cluster
+      if(i==0) { birth_subs[i] = NULL; }
+      else {
+        birth_subs[i] = sub_new(bb->bi[bb->bi[i]->birth_comp.i]->center, bb->bi[i]->center, match, mismatch, gap, homo_gap, use_kmers, 1.0, band_size, vectorized_alignment, SSE, gapless);
+      }
+    }
+  };
+  dada2::parallel_for(0, bb->nclust, final_subs, GRAIN_SIZE, n_threads);
+
+  DadaOutput out;
+  // Assign final w/in cluster P
+  out.pval_raw.assign(nraw, 0.0);
+  for(i=0;i<bb->nclust;i++) {
+    for(r=0;r<bb->bi[i]->nraw;r++) {
+      raw = bb->bi[i]->raw[r];
+      index = raw->index;
+      if(bb->bi[i]->center == raw) { // centers always have correct=true
+        raw->p = 1.0; // Due to fp precision, possible to get 1's from non-centers in below calc
+      } else {
+        raw->p = calc_pA(raw->reads, raw->comp.lambda * bb->bi[i]->reads, true);
+        if(raw->p < opt.omega_c) { raw->correct = false; } // Don't correct!
+      }
+      out.pval_raw[index] = raw->p;
+    }
+  }
+
+  b_make_clustering_df(bb, subs, birth_subs, has_quals, out);
+  b_make_transition_by_quality_matrix(bb, subs, has_quals, err_ncol, out);
+  b_make_cluster_quality_matrix(bb, subs, has_quals, maxlen, out);
+  b_make_birth_subs_df(bb, birth_subs, has_quals, out);
+
+  // Make map from uniques to cluster
+  out.map.assign(nraw, -1);
+  for(i=0;i<bb->nclust;i++) {
+    for(r=0;r<bb->bi[i]->nraw;r++) {
+      raw = bb->bi[i]->raw[r];
+      if(raw->correct) {
+        out.map[raw->index] = i; // 0-based (upstream: i+1 for R)
+      } else {
+        out.map[raw->index] = -1; // upstream: NA_INTEGER
+      }
+    }
+  }
+  // DadaState releases subs, B and raws.
+  return out;
+}
+
+}  // namespace dada2
+
+B *run_dada(Raw **raws, int nraw, const ErrMat &errMat,
+            int match, int mismatch, int gap_pen, int homo_gap_pen, bool use_kmers, double kdist_cutoff, int band_size,
+            double omegaA, double omegaP, bool detect_singletons,
+            int max_clust, double min_fold, int min_hamming, int min_abund,
+            bool use_quals, bool final_consensus, bool vectorized_alignment, int n_threads, bool verbose,
+            int SSE, bool gapless, bool greedy) {
+  int newi=0, nshuffle = 0;
+  bool shuffled = false;
+
+  B *bb;
+  bb = b_new(raws, nraw, omegaA, omegaP, use_quals); // New cluster with all sequences in 1 bi
+  // Everyone gets aligned within the initial cluster, no KMER screen
+  b_compare(bb, 0, errMat, match, mismatch, gap_pen, homo_gap_pen, use_kmers, 1.0, band_size, vectorized_alignment, SSE, gapless, greedy, verbose, n_threads);
+  b_p_update(bb, greedy, detect_singletons); // Calculates abundance p-value for each raw in its cluster (consensuses)
+  
+  if(max_clust < 1) { max_clust = bb->nraw; }
+  
+  while( (bb->nclust < max_clust) && (newi = b_bud(bb, min_fold, min_hamming, min_abund, verbose)) ) {
+    if(verbose) dada2_log("\nNew Cluster C%i:", newi);
+    b_compare(bb, newi, errMat, match, mismatch, gap_pen, homo_gap_pen, use_kmers, kdist_cutoff, band_size, vectorized_alignment, SSE, gapless, greedy, verbose, n_threads);
+    // Keep shuffling and updating until no more shuffles
+    nshuffle = 0;
+    do {
+      shuffled = b_shuffle2(bb);
+      if(verbose) { dada2_log("S"); }
+    } while(shuffled && ++nshuffle < MAX_SHUFFLE);
+    if(verbose && nshuffle >= MAX_SHUFFLE) { dada2_log("Warning: Reached maximum (%i) shuffles.\n", MAX_SHUFFLE); }
+
+    b_p_update(bb, greedy, detect_singletons);
+    dada2_check_interrupt();
+  } // while( (bb->nclust < max_clust) && (newi = b_bud(bb, min_fold, min_hamming, min_abund, verbose)) )
+  
+  if(verbose) dada2_log("\nALIGN: %i aligns, %i shrouded (%i raw).\n", bb->nalign, bb->nshroud, bb->nraw);
+  
+  return bb;
+}
+

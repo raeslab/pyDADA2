@@ -1,0 +1,3 @@
+# The Dockerfile copies nothing from the repo (the workspace is bind-mounted),
+# so keep the build context empty for fast builds and to never leak secrets.
+*
