@@ -660,13 +660,23 @@ wj(list(uniques_to_fasta = readLines(ufa),
 
 # ===================================================== e2e (vignette) ===
 log_msg("e2e")
+# The vignette pipeline: learned error rates (learnErrors above), dada, mergePairs,
+# makeSequenceTable, consensus chimera removal. Taxonomy is not stored here: R's assignTaxonomy
+# is not reproducible (std::random_device tie-breaks, also inside the bootstrap), which would make
+# this file change on every run. Every e2e ASV is among taxonomy.json's `queries`, so the e2e test
+# compares against those R results (spec §8.3 criterion).
 getN <- function(x) sum(getUniques(x))
-track <- cbind(p1$res$reads_in, p1$res$reads_out, sapply(ddF, getN), sapply(ddR, getN),
-               sapply(mergers, getN), rowSums(seqtab.nochim))
+ddF_le <- run_dada(dF_P, leF$err_out)
+ddR_le <- run_dada(dR, leR$err_out)
+mergers_le <- suppressMessages(mergePairs(ddF_le, dF_P, ddR_le, dR))
+seqtab_le <- makeSequenceTable(mergers_le)
+nochim_le <- removeBimeraDenovo(seqtab_le, method = "consensus", multithread = FALSE)
+stopifnot(all(colnames(nochim_le) %in% colnames(seqtab.nochim)))
+track <- cbind(p1$res$reads_in, p1$res$reads_out, sapply(ddF_le, getN), sapply(ddR_le, getN),
+               sapply(mergers_le, getN), rowSums(nochim_le))
 colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
 rownames(track) <- c("sam1", "sam2")
-wj(list(track = mat_list(track), seqtab_nochim = mat_list(seqtab.nochim),
-        taxa = df_list(as.data.frame(unname(taxa50)))), "e2e")
+wj(list(track = mat_list(track), seqtab_nochim = mat_list(nochim_le)), "e2e")
 
 # ============================================ coverage: filter inputs (T1) ===
 # Synthetic inputs on which maxN, maxLen, minLen, rm.phix and rm.lowcomplex actually remove

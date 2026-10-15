@@ -216,3 +216,46 @@ def run_filter_case(fx: dict[str, Any], tmp_path: Path) -> None:
     if paired:
         for p, exp in zip(filt_rev, fx["outputs_rev"], strict=True):
             check_fastq_output(p, exp)
+
+
+# ---------------------------------------------------------------------- taxonomy ---
+def r_taxonomy(obj: dict[str, list[Any]]) -> np.ndarray:
+    """R taxonomy data.frame fixture (columns V1..Vk) -> object array (None for NA)."""
+    # Built directly: pandas 3 would turn None into NaN in string columns.
+    cols = sorted(obj, key=lambda c: int(c[1:]))
+    return np.array([obj[c] for c in cols], dtype=object).T
+
+
+def binomial_bound(p_a: Any, p_b: Any = None) -> np.ndarray:
+    """3 sigma of the difference of two independent 100-draw bootstrap estimates (+2 for ties),
+    using the pooled estimate of the underlying proportion (spec §8.3)."""
+    pooled = p_a if p_b is None else (np.asarray(p_a) + np.asarray(p_b)) / 2
+    p = np.clip(np.asarray(pooled, dtype=float) / 100.0, 0.0, 1.0)
+    return np.asarray(3 * np.sqrt(2 * 100 * p * (1 - p)) + 2)
+
+
+def assert_bootstrap_agreement(boot: Any, r_boot: Any) -> None:
+    """Spec §8.3: median |boot_py - boot_R| <= 10 and every entry within 3 sigma."""
+    boot, r_boot = np.asarray(boot, dtype=float), np.asarray(r_boot, dtype=float)
+    assert boot.shape == r_boot.shape
+    diff = np.abs(boot - r_boot)
+    assert np.median(diff) <= 10
+    assert (diff <= binomial_bound(boot, r_boot)).all(), np.argwhere(
+        diff > binomial_bound(boot, r_boot)
+    )
+
+
+def taxonomy_disagreements(got: Any, exp: Any, r_boot: Any, min_boot: float = 50) -> list[Any]:
+    """Spec §8.3 at ``min_boot``: (row, level, R bootstrap) of every first disagreement per row.
+
+    Raises AssertionError for a disagreement whose R bootstrap is outside min_boot +- 3 sigma.
+    """
+    out = []
+    for i in range(exp.shape[0]):
+        for j in range(exp.shape[1]):
+            if got[i, j] == exp[i, j] or (got[i, j] is None and exp[i, j] is None):
+                continue
+            assert abs(r_boot[i, j] - min_boot) <= binomial_bound(np.array(min_boot)), (i, j)
+            out.append((i, j, int(r_boot[i, j])))
+            break  # deeper levels follow from this one
+    return out

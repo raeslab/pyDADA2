@@ -42,6 +42,7 @@ def test_is_bimera(ch):
 
 def test_is_bimera_denovo_table(ch):
     st = _table(ch["st_chim"])
+    assert st.columns.tolist()[-len(ch["chims"]) :] == ch["chims"]
     assert is_bimera_denovo_table(st).tolist() == ch["is_bimera_denovo_table"]
     got = is_bimera_denovo_table(st, allow_one_off=True, min_sample_fraction=0.5)
     assert got.tolist() == ch["is_bimera_denovo_table_oneoff"]
