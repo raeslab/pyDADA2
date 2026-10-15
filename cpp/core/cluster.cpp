@@ -5,6 +5,8 @@
 //  * b_compare/b_compare_parallel merged into one b_compare using dada2::parallel_for.
 //  * Rcpp::NumericMatrix -> ErrMat; Rcpp::stop/Rprintf -> dada2_stop/dada2_log.
 //  * b_shuffle2 scratch arrays are std::vectors (exception safety).
+//  * b_bud sets birth_from for prior-born ("P") clusters (upstream left it unset: garbage).
+//  * Lambda range checks are NaN-safe.
 #include "dada.h"
 #include "parallel.h"
 
@@ -77,7 +79,7 @@ void b_compare(B *b, unsigned int i, const ErrMat &errMat,
     raw = b->raw[index];
     comp = comps[index];
     lambda = comp.lambda;
-    if(lambda<0 || lambda>1) dada2_stop("Lambda out-of-range error.");
+    if(!(lambda >= 0 && lambda <= 1)) dada2_stop("Lambda out-of-range error."); // NaN-safe
 
     // Store self-lambda
     if(index == b->bi[i]->center->index) {
@@ -223,6 +225,7 @@ int b_bud(B *b, double min_fold, int min_hamming, int min_abund, bool verbose) {
     raw = bi_pop_raw(b->bi[mini_prior], minr_prior);
     i = b_add_bi(b, bi_new(b->nraw));
     strcpy(b->bi[i]->birth_type, "P");
+    b->bi[i]->birth_from = mini_prior; // pydada2: upstream left birth_from unset (garbage) here
     b->bi[i]->birth_pval = pP;
     b->bi[i]->birth_fold = raw->reads/expected;
     b->bi[i]->birth_e = expected;

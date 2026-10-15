@@ -198,3 +198,45 @@ def test_nwvec_scratch_reuse_and_long_sequences():
     for (a, b), (al0, al1) in zip(pairs, batch, strict=True):
         assert al0.replace("-", "") == a and al1.replace("-", "") == b
         assert core.nwvec([a], [b], 5, -4, -8, 16, True)[0] == (al0, al1)
+
+
+def test_dada_uniques_validates_err_and_quals():
+    seqs, ab, pri, err, quals = _dada_args()
+    for bad in (np.nan, -0.1, 1.5, np.inf):
+        e = err.copy()
+        e[3, 7] = bad
+        with pytest.raises(ValueError, match="Error matrix entries"):
+            core.dada_uniques(seqs, ab, pri, e, quals)
+    with pytest.raises(ValueError, match="Quality scores are required"):
+        core.dada_uniques(seqs, ab, pri, err, None)
+    # without quals and use_quals=False the transitions go to the first column (no crash)
+    out = core.dada_uniques(seqs, ab, pri, np.ascontiguousarray(err[:, :1]), None, use_quals=False)
+    assert out["trans"][:, 1:].sum() == 0 and out["trans"][:, 0].sum() > 0
+
+
+def test_prior_born_clusters_have_birth_from():
+    # omega_a = 0 forbids abundance births; with every sequence a prior and a lenient omega_p,
+    # clusters are born from priors ("P"). birth_from was left uninitialised upstream.
+    seqs, ab, _pri, err, quals = _dada_args()
+    outs = [
+        core.dada_uniques(seqs, ab, [True] * len(seqs), err, quals, omega_a=0.0, omega_p=0.5)
+        for _ in range(3)
+    ]
+    bf = outs[0]["birth_from"]
+    n = len(outs[0]["sequence"])
+    assert n > 1
+    assert bf[0] == -1 or bf[0] == 0
+    assert ((bf[1:] >= 0) & (bf[1:] < n)).all()
+    for o in outs[1:]:
+        np.testing.assert_array_equal(o["birth_from"], bf)
+
+
+def test_dada_uniques_raising_log_callback_propagates():
+    seqs, ab, pri, err, quals = _dada_args()
+
+    def boom(msg):
+        raise RuntimeError("log failed")
+
+    for _ in range(3):  # the B object is released on every abort (checked under ASan)
+        with pytest.raises(RuntimeError, match="log failed"):
+            core.dada_uniques(seqs, ab, pri, err, quals, verbose=True, log=boom)

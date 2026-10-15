@@ -4,7 +4,7 @@
 // Changes for pydada2:
 //  * Rcpp::ppois(n, lambda, lower.tail=false) -> ppois_upper (stats.h, Boost.Math based).
 //  * Removed the commented-out copy of R's nmath ppois/pgamma (GPL) carried upstream.
-//  * compute_lambda: single thread-safe implementation over an ErrMat view.
+//  * compute_lambda: single thread-safe implementation over an ErrMat view; NaN-safe range check.
 /*
 Pval.cpp contains the functions related to calculating the abundance pval in DADA2.
 */
@@ -147,7 +147,7 @@ double compute_lambda(Raw *raw, Sub *sub, const ErrMat &errMat, bool use_quals) 
     lambda = lambda * err_mat[tvec[pos1]*ncol+qind[pos1]];
   }
   
-  if(lambda < 0 || lambda > 1) { dada2_stop("Bad lambda."); }
+  if(!(lambda >= 0 && lambda <= 1)) { dada2_stop("Bad lambda."); } // NaN-safe
   
   return lambda;
 }
