@@ -665,4 +665,128 @@ rownames(track) <- c("sam1", "sam2")
 wj(list(track = mat_list(track), seqtab_nochim = mat_list(seqtab.nochim),
         taxa = df_list(as.data.frame(unname(taxa50)))), "e2e")
 
+# ================================================ review fixes (python layer) ===
+# Fixtures for the REVIEW.md section 1.3-1.6 fixes (written to review_python.json[.gz] and
+# loess_degenerate.json[.gz]; inputs/binned_singletons.fastq.gz, inputs/priors.fa,
+# inputs/with_n.fastq.gz, inputs/species_tokens.fa).
+log_msg("review fixes (python layer)")
+TRN <- c("A2A", "A2C", "A2G", "A2T", "C2A", "C2C", "C2G", "C2T", "G2A", "G2C", "G2G", "G2T",
+         "T2A", "T2C", "T2G", "T2T")
+mk_trans <- function(cols, base, ev) {
+  tr <- matrix(0, 16, 41, dimnames = list(TRN, 0:40))
+  for (k in seq_along(cols)) {
+    tr[c(1, 6, 11, 16), cols[k] + 1] <- base[k]
+    tr[-c(1, 6, 11, 16), cols[k] + 1] <- ev[k]
+  }
+  tr
+}
+loess_case <- function(tr) {
+  e <- tryCatch(suppressWarnings(loessErrfun(tr)), error = function(e) NULL)
+  list(trans = mat_list(tr), ok = !is.null(e), err = if (is.null(e)) NULL else mat_list(e))
+}
+# 1.3: few observed quality scores (binned qualities): skmisc aborts, R only warns.
+lo_cases <- list(
+  mk_trans(c(2, 12, 23, 37), c(500, 3000, 20000, 200000), c(50, 60, 40, 30)),
+  mk_trans(c(2, 12, 23, 37), c(1000, 1000, 1000, 1000), c(3, 3, 3, 3)),
+  mk_trans(c(2, 14, 21, 27, 32, 36), c(500, 3000, 20000, 2e5, 1e5, 1e5), c(50, 60, 40, 30, 10, 5)),
+  mk_trans(c(10, 20, 30), c(1000, 1200, 1300), c(3, 3, 3)),
+  mk_trans(c(11, 25, 37), c(1000, 20000, 300000), c(100, 50, 20))
+)
+set.seed(131)
+while (length(lo_cases) < 60) {
+  nq <- sample(2:8, 1)
+  cols <- sort(sample(0:40, nq))
+  tr <- matrix(0, 16, 41, dimnames = list(TRN, 0:40))
+  for (cc in cols) {
+    base <- 10^runif(1, 0, 6)
+    for (i in 0:3) {
+      tr[5 * i + 1, cc + 1] <- floor(base * runif(1, 0.5, 1.5))
+      for (j in setdiff(0:3, i)) tr[4 * i + j + 1, cc + 1] <- rpois(1, base * 10^(-cc / 10 - 0.5))
+    }
+  }
+  lo_cases[[length(lo_cases) + 1]] <- tr
+}
+wj(lapply(lo_cases, loess_case), "loess_degenerate")
+
+rv <- list()
+# 1.3: binned qualities (2/12/23/37), singleton reads only: few quality columns in learnErrors.
+fqb <- readFastq(filtF_P[1])
+qm <- as(quality(fqb), "matrix")
+qb <- ifelse(qm < 7, 2L, ifelse(qm < 18, 12L, ifelse(qm < 30, 23L, 37L)))
+qs <- apply(qb, 1, function(r) rawToChar(as.raw(r[!is.na(r)] + 33L)))
+fqb <- ShortReadQ(sread(fqb), FastqQuality(BStringSet(qs)), id(fqb))
+fqb <- fqb[!duplicated(as.character(sread(fqb)))]
+write_fq(fqb, inp("binned_singletons.fastq.gz"))
+le_bin <- learnErrors(inp("binned_singletons.fastq.gz"), multithread = FALSE, verbose = 0)
+dd_bin <- run_dada(derepFastq(inp("binned_singletons.fastq.gz")), tperr1)
+rv$binned <- list(learn = le_out(le_bin), dada_err_out = mat_list(dd_bin$err_out))
+
+# 1.4: duplicate merged sequences (maxMismatch = 2) -> makeSequenceTable column order.
+mg2 <- mm(maxMismatch = 2)
+rv$dup_mergers <- list(
+  mergers = lapply(mg2, function(m) df_list(m[, c("sequence", "abundance")])),
+  uniques = lapply(mg2, function(m) unq_list(suppressMessages(getUniques(m)))),
+  seqtab = mat_list(suppressMessages(makeSequenceTable(mg2))),
+  seqtab_nsamples = mat_list(suppressMessages(makeSequenceTable(mg2, orderBy = "nsamples"))),
+  seqtab_unordered = mat_list(suppressMessages(makeSequenceTable(mg2, orderBy = NULL)))
+)
+rv$get_sequences_collapse <- getSequences(c("acgt", "ACGT", "GG", "acgt"), collapse = TRUE)
+tx_tab <- matrix(c("Bacteria", "Bacteria", "Firmicutes", NA), nrow = 2,
+                 dimnames = list(c("ACGTAC", "GGTTAA"), c("Kingdom", "Phylum")))
+rv$get_sequences_taxtab <- getSequences(tx_tab)
+
+# 1.5: priors given as one sequence, a FASTA path, or a derep object.
+d1raw <- derepFastq(ext("sam1F.fastq.gz"))
+dd_np <- run_dada(d1raw, tperr1, OMEGA_A = 1e-60)
+cand <- which(!(names(d1raw$uniques) %in% dd_np$sequence) & d1raw$uniques >= 2)
+prior1 <- NULL
+for (k in cand) {
+  dk <- run_dada(d1raw, tperr1, OMEGA_A = 1e-60, priors = names(d1raw$uniques)[k])
+  if (length(dk$denoised) != length(dd_np$denoised)) { prior1 <- names(d1raw$uniques)[k]; break }
+}
+stopifnot(!is.null(prior1))
+writeLines(c(">prior1", prior1), inp("priors.fa"))
+rv$priors <- list(
+  prior = prior1,
+  none = unq_list(dd_np$denoised),
+  string = unq_list(run_dada(d1raw, tperr1, OMEGA_A = 1e-60, priors = prior1)$denoised),
+  fasta = unq_list(run_dada(d1raw, tperr1, OMEGA_A = 1e-60, priors = inp("priors.fa"))$denoised),
+  derep_sam2 = unq_list(run_dada(d1raw, tperr1, OMEGA_A = 1e-60,
+                                 priors = derepFastq(ext("sam2F.fastq.gz")))$denoised)
+)
+
+# 1.6b: isShiftDenovo ignores flagSubseqs.
+P <- getSequences(ddF$sam1)[1]
+Q <- getSequences(ddF$sam1)[2]
+sh_u <- setNames(c(100L, 90L, 2L, 2L, 2L),
+                 c(P, Q, substr(P, 1, 200), substr(P, 21, 220), paste0(substr(P, 11, 240), "ACGTACGTAC")))
+rv$shift <- list(uniques = unq_list(sh_u), default = unname(isShiftDenovo(sh_u)),
+                 subseqs = unname(isShiftDenovo(sh_u, flagSubseqs = TRUE)))
+
+# 1.6c: species reference ids tokenised like strsplit(ids, "\\s").
+sq <- getSequences(ddF$sam1)[1:5]
+sp_ids <- c("r1 Genus1 alpha", "r2 Genus1  beta", "r3 Genus2 ", "r4\tGenus3\tgamma\t",
+            "r5 Genus4  ", "r6 Genus4 delta", "r7 Genus5  x")
+sp_seq <- c(paste0("AAA", sq[1], "TTT"), paste0("CC", sq[1]), sq[2], paste0(sq[3], "G"),
+            paste0("T", sq[4]), sq[4], sq[5])
+writeLines(paste0(">", sp_ids, "\n", sp_seq), inp("species_tokens.fa"))
+sp1 <- assignSpecies(sq, inp("species_tokens.fa"))
+sp2 <- assignSpecies(sq, inp("species_tokens.fa"), allowMultiple = TRUE)
+rv$species_tokens <- list(queries = sq, single = df_list(as.data.frame(unname(sp1))),
+                          multiple = df_list(as.data.frame(unname(sp2))))
+
+# 1.6f: maxN / minLen / minQ given as +-Inf.
+fqn <- readFastq(ext("sam1F.fastq.gz"))[1:200]
+sn <- as.character(sread(fqn))
+for (i in 1:30) { substr(sn[i], 50, 50) <- "N"; if (i <= 10) substr(sn[i], 120, 120) <- "N" }
+write_fq(ShortReadQ(DNAStringSet(sn), quality(fqn), id(fqn)), inp("with_n.fastq.gz"))
+rv$filter_inf <- list(
+  maxN_inf = run_filter("RV1", inp("with_n.fastq.gz"), truncQ = 0, maxN = Inf, minLen = -Inf,
+                        rm.phix = FALSE)$res,
+  maxN_1 = run_filter("RV2", inp("with_n.fastq.gz"), truncQ = 0, maxN = 1, rm.phix = FALSE)$res,
+  minQ_inf = run_filter("RV3", inp("with_n.fastq.gz"), truncQ = 0, minQ = Inf, minLen = Inf,
+                        rm.phix = FALSE)$res
+)
+wj(rv, "review_python")
+
 log_msg("done")
