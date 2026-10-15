@@ -201,3 +201,26 @@ def test_input_validation():
         core.kmer_dist(["ACGTACGT"], [], 5)
     with pytest.raises(ValueError, match="equal length"):
         core.nwvec(["ACGT"], [], 5, -4, -8, -1, True)
+
+
+def test_seq_complexity_exact():
+    """seqComplexity sums like R's long-double sum(): uniform k-mer spectra give exact integers
+    (NGAGTACCNN -> 6, not 5.999999999999998), so rm_lowcomplex thresholds match R exactly."""
+    import pydada2 as dada2
+
+    d = load("complexity_thresholds")
+    assert d["k2"]["seqs"][0] == "NGAGTACCNN" and d["k2"]["value"][0] == 6.0
+    with pytest.warns(UserWarning):
+        got = dada2.seq_complexity(d["k2"]["seqs"])
+    np.testing.assert_array_equal(got, d["k2"]["value"])
+    with pytest.warns(UserWarning):
+        got = dada2.seq_complexity(d["k3"]["seqs"], kmer_size=3)
+    np.testing.assert_array_equal(got, d["k3"]["value"])
+    got = dada2.seq_complexity(d["window"]["seqs"], window=12, by=3)
+    np.testing.assert_array_equal(got, d["window"]["value"])
+    cx = load("sequences")["complexity"]
+    for key, kw in (("k2", {}), ("k3", {"kmer_size": 3}), ("win50", {"window": 50, "by": 5})):
+        with pytest.warns(UserWarning):
+            got = dada2.seq_complexity(cx["seqs"], **kw)
+        exp = np.array([np.nan if v is None else v for v in cx[key]], dtype=float)
+        np.testing.assert_array_equal(got, exp, err_msg=key)

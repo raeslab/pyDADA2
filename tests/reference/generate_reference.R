@@ -700,4 +700,32 @@ pp <- do.call(rbind, pp)
 pp$p_upper <- ppois(pp$n, pp$lambda, lower.tail = FALSE)
 wj(df_list(pp), "ppois_extended")
 
+log_msg("seqComplexity thresholds")
+# Uniform k-mer spectra: exp(entropy) is an integer in exact arithmetic, so the long-double
+# accumulation of R's sum() decides the last bit (e.g. NGAGTACCNN -> exactly 6).
+set.seed(20261016)
+uniform_walk <- function(k, len) {
+  x <- sample(c("A", "C", "G", "T"), k - 1, replace = TRUE)
+  used <- character(0)
+  repeat {
+    if (length(x) >= len) break
+    nxt <- sample(c("A", "C", "G", "T"))
+    ok <- FALSE
+    for (b in nxt) {
+      km <- paste0(c(tail(x, k - 1), b), collapse = "")
+      if (!(km %in% used)) { used <- c(used, km); x <- c(x, b); ok <- TRUE; break }
+    }
+    if (!ok) break
+  }
+  paste(x, collapse = "")
+}
+pad <- function(s) paste0(strrep("N", sample(0:2, 1)), s, strrep("N", sample(0:2, 1)))
+cx2 <- c("NGAGTACCNN", vapply(1:300, function(i) pad(uniform_walk(2, sample(3:17, 1))), ""))
+cx3 <- vapply(1:200, function(i) pad(uniform_walk(3, sample(4:40, 1))), "")
+cxw <- vapply(1:60, function(i) paste0(uniform_walk(2, 17), uniform_walk(2, 17), uniform_walk(2, 17)), "")
+wj(list(k2 = list(seqs = cx2, value = suppressWarnings(seqComplexity(cx2))),
+        k3 = list(seqs = cx3, value = suppressWarnings(seqComplexity(cx3, kmerSize = 3))),
+        window = list(seqs = cxw, value = suppressWarnings(seqComplexity(cxw, window = 12, by = 3)))),
+   "complexity_thresholds")
+
 log_msg("done")
