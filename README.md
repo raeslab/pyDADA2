@@ -9,21 +9,22 @@ through a Pythonic, scikit-learn-style API.
 * Upstream: <https://github.com/benjjneb/dada2> (the algorithms and their C++ implementation)
 * License: LGPL (see `LICENSE`), as the upstream code it derives from
 
-Results are validated against R dada2 1.36 on the bundled example data, on the MiSeq SOP dataset
-and on the full 362-sample Stability dataset it comes from (see
-[Benchmark](#benchmark-pydada2-vs-r-dada2)). Filtering, dereplication, denoising, merging,
-sequence tables and chimera removal give identical results on MiSeq SOP. On the larger dataset,
-every table is identical, but in 8 of 724 denoising runs the clusters come out in a different
-order (same ASVs and abundances; see [`REVIEW.md`](REVIEW.md) §1.1). Known differences are listed in
-[`DEVIATIONS.md`](DEVIATIONS.md); for example, taxonomy bootstrap values differ by
-random-number noise only.
+Results are validated against R dada2 1.36 on three datasets (see
+[Benchmark](#benchmark-pydada2-vs-r-dada2)):
+- the bundled example data;
+- the MiSeq SOP dataset;
+- the full 362-sample Stability dataset that MiSeq SOP comes from.
+
+Filtering, dereplication, error learning, denoising, merging, sequence tables and chimera
+removal give identical results on all three. Known differences are listed in
+[`DEVIATIONS.md`](DEVIATIONS.md); for example, taxonomy bootstrap values differ by random-number
+noise only. pydada2 is **6–12x faster than R** on MiSeq SOP, and 4.5x on the larger dataset.
 
 ## Installation
 
-```bash
-pip install pydada2            # placeholder name, see "Status" below
-pip install "pydada2[plot]"    # with matplotlib for the plotting functions
-```
+pydada2 is not on PyPI yet: the name `pydada2` belongs to an unrelated project there (see
+"Status"), so `pip install pydada2` does **not** install this package. Install it from source
+or from the wheels built by CI. The plotting functions need matplotlib (the `plot` extra).
 
 From source (needs a C++17 compiler and CMake; uses [uv](https://docs.astral.sh/uv/)):
 
@@ -95,37 +96,60 @@ means NA in integer arrays. Estimators follow scikit-learn conventions: paramete
 ## Benchmark: pydada2 vs R dada2
 
 Both tools ran the full [DADA2 tutorial](https://benjjneb.github.io/dada2/tutorial.html)
-pipeline with identical parameters on the MiSeq SOP dataset (20 samples, 16S V4, 2x250,
-152,360 read pairs), with SILVA 138.2 for taxonomy. Each configuration ran 3 times in a fresh
-process on an Intel Core Ultra 7 265H (Linux), with R 4.6.1 / dada2 1.36.0 and Python 3.13 /
-pydada2 0.1.0. Full report: [`benchmarks/dataset/REPORT.md`](benchmarks/dataset/REPORT.md).
+pipeline with identical parameters, with SILVA 138.2 for taxonomy. Setup:
 
-**Results are identical.** These outputs match R exactly: the read-tracking table (input,
-filtered, denoised F/R, merged, non-chimeric reads per sample), the denoised ASVs and their
-abundances, the merged pairs, the sequence table (232 non-chimeric ASVs, same order and
-counts) and the chimera calls. Learned error rates agree to a relative 1.4e-14. Every run of
-either tool, at 1 or 8 threads, gives the same output.
+- **Machine:** Intel Core Ultra 7 265H (Linux), each run in a fresh process.
+- **Versions:**
+  - R 4.6.1 / dada2 1.36.0;
+  - Python 3.13 / pydada2 0.1.0 at commit `5e6453a` ("now");
+  - for comparison, the previous pydada2 at `dff04da` ("before"), before the
+    [`REVIEW.md`](REVIEW.md) fixes.
+- **Scripts:** every version ran the same pipeline scripts.
+- **Multithreading:** R's `mergePairs` and `addSpecies` have no multithreading; pydada2 uses
+  `n_jobs` there too.
 
-Taxonomy uses a different random-number generator for the bootstrap (by design, see
-[`DEVIATIONS.md`](DEVIATIONS.md)). 229 of 232 ASVs get the same assignment at every level,
-including species. The other 3 differ at genus or family level, where R's bootstrap was 45–48,
-right at the `min_boot=50` cutoff. Bootstrap confidences differ by a median of 0 and a
-maximum of 14, all within binomial noise.
+### MiSeq SOP (20 samples, 16S V4, 2x250, 152,360 read pairs)
 
-**pydada2 is 1.7–1.8x faster and uses 35 % less memory** (median wall time per stage):
+**Results are identical.** These outputs match R exactly:
+- the read-tracking table;
+- the denoised ASVs and abundances per sample;
+- the merged pairs;
+- the sequence table (232 non-chimeric ASVs, same order and counts);
+- the chimera calls.
 
-| stage | R, 1 thread | pydada2, 1 thread | R, 8 threads | pydada2, 8 threads |
-|---|---|---|---|---|
-| filter_and_trim | 17.8 s | 7.0 s | 5.6 s | 1.6 s |
-| learn_errors (F + R) | 105.0 s | 68.3 s | 31.0 s | 21.0 s |
-| derep_fastq (F + R) | 3.3 s | 0.8 s | 3.4 s | 0.8 s |
-| dada (F + R) | 17.5 s | 11.8 s | 4.3 s | 3.5 s |
-| merge_pairs | 1.0 s | 0.7 s | 1.0 s | 0.7 s |
-| remove_bimera_denovo | 0.27 s | 0.18 s | 0.04 s | 0.03 s |
-| assign_taxonomy (SILVA) | 84.1 s | 58.4 s | 75.8 s | 48.6 s |
-| add_species (SILVA) | 21.1 s | 4.9 s | 20.9 s | 2.2 s |
-| **total** | **4.2 min** | **2.5 min** | **2.4 min** | **78 s** |
-| peak memory (RSS) | 4.4 GiB | 2.9 GiB | 4.4 GiB | 3.0 GiB |
+Learned error rates agree with R to a relative 1.4e-14. Every output, including taxonomy and
+bootstraps at the same seed, is bit-identical between the previous and the current pydada2.
+
+**Taxonomy.** pydada2 uses a different random-number generator for the bootstrap (by design,
+see [`DEVIATIONS.md`](DEVIATIONS.md)). 229 of 232 ASVs get the same assignment at every level.
+The other 3 differ at a level where R's bootstrap was 45–48, right at the `min_boot=50` cutoff.
+
+**pydada2 is 6.0x faster than R at 1 thread and 12.1x at 8 threads**, and uses 40–50 % less
+memory (median of 3 runs; full report:
+[`benchmarks/dataset/REPORT.md`](benchmarks/dataset/REPORT.md)):
+
+| stage | R, 1 thr | before, 1 thr | **now, 1 thr** | R, 8 thr | before, 8 thr | **now, 8 thr** |
+|---|---|---|---|---|---|---|
+| filter_and_trim | 17.7 s | 6.7 s | **3.1 s** | 5.3 s | 1.5 s | **1.2 s** |
+| learn_errors (F + R) | 104.7 s | 66.3 s | **16.6 s** | 30.2 s | 20.8 s | **3.6 s** |
+| derep_fastq (F + R) | 3.3 s | 0.82 s | **0.77 s** | 3.5 s | 0.80 s | **0.77 s** |
+| dada (F + R) | 17.5 s | 11.6 s | **9.6 s** | 4.2 s | 3.5 s | **1.6 s** |
+| merge_pairs | 0.98 s | 0.65 s | **0.30 s** | 1.0 s | 0.18 s | **0.11 s** |
+| make_sequence_table + remove_bimera_denovo | 0.28 s | 0.19 s | **0.15 s** | 0.05 s | 0.03 s | **0.03 s** |
+| assign_taxonomy (SILVA) | 83.3 s | 57.9 s | **6.5 s** | 73.8 s | 47.3 s | **2.6 s** |
+| add_species (SILVA) | 21.1 s | 4.8 s | **4.3 s** | 21.0 s | 2.1 s | **1.6 s** |
+| **total** | **4.1 min** | **2.5 min** | **41.5 s** | **2.3 min** | **76.0 s** | **11.6 s** |
+| peak memory (RSS) | 4.4 GiB | 2.9 GiB | **2.3 GiB** | 4.4 GiB | 3.0 GiB | **2.7 GiB** |
+
+**Against the previous pydada2**, the current version is 3.6x faster at 1 thread and 6.6x at 8
+threads, and no stage is slower. The main changes:
+
+- **Taxonomy (8.9–18x):** a sparse, parallel build of the SILVA reference model with a k-mer-major
+  table.
+- **Error learning (4–6x):** alignments are reused across the self-consistency rounds,
+  samples are denoised concurrently, and threads come from a persistent pool.
+- **Filtering:** a faster phiX screen.
+- **Merging:** pairs are batched and de-duplicated.
 
 To reproduce (needs R with dada2 1.36; downloads about 250 MB into `benchmarks/dataset/data/`):
 
@@ -133,58 +157,55 @@ To reproduce (needs R with dada2 1.36; downloads about 250 MB into `benchmarks/d
 benchmarks/dataset/download.sh                       # MiSeq SOP + SILVA 138.2, SHA-256 checked
 uv run python benchmarks/dataset/run.py 3 1 8        # 3 repeats x {1, 8} threads x {R, pydada2}
 uv run python benchmarks/dataset/report.py           # compare outputs, write REPORT.md
+# optional: an earlier pydada2 in another venv, then add its results dir as the 4th argument
+uv run python benchmarks/dataset/run.py --tool py --python <venv>/bin/python --results <dir> 3 1 8
 ```
 
-### Larger dataset: the full Stability data set (362 samples)
+### Larger dataset: the full Stability data set (362 samples, 3.65M read pairs)
 
 MiSeq SOP is a 20-sample subset of the mouse "Stability" study (Kozich et al. 2013). The full
-data set has 362 samples and 3.65 million read pairs (24x more), with the same chemistry
-(16S V4, 2x250). The same pipeline and parameters were used, at 8 threads, with 2 runs per tool.
-Full report: [`benchmarks/dataset/REPORT_stability.md`](benchmarks/dataset/REPORT_stability.md).
+data set is 24x larger, with the same chemistry. The same pipeline was used at 8 threads, with
+2 runs per tool. Full report:
+[`benchmarks/dataset/REPORT_stability.md`](benchmarks/dataset/REPORT_stability.md).
 
-**Results:**
+**Results are identical.** These outputs match R exactly:
+- the read-tracking table, from 3.65M input pairs down to 2.97M non-chimeric reads;
+- the dereplicated uniques;
+- the denoised ASVs per sample, including their order;
+- the merged pairs;
+- the sequence table (752 ASVs);
+- the chimera calls.
 
-- **Identical to R:**
-  - the read-tracking table, from 3.65M input pairs down to 2.97M non-chimeric reads;
-  - the dereplicated uniques;
-  - the sequence table (752 ASVs: same columns, order and counts);
-  - all chimera calls.
-- **Error rates** agree to a relative 9.2e-15.
-- **Denoising:** every sample has exactly the same ASVs and abundances as in R. In 8 of 724
-  denoising runs (362 samples x forward/reverse), the clusters come out in a different
-  order. As a result, the merged pairs of those 8 samples carry different forward/reverse
-  cluster indices. Their sequences and abundances are unchanged, so the sequence table is not
-  affected. The cause is a Poisson tail that underflows to 0 where R returns a tiny subnormal
-  number; [`REVIEW.md`](REVIEW.md) §1.1 has the analysis and a fix.
-- **Taxonomy:** 412 of 420 ASVs are identical at every level. The other 8 differ at genus only,
-  where R's bootstrap was 41–52, at the `min_boot=50` cutoff. Bootstraps differ by a median of
-  0 (maximum 23).
+Error rates agree to a relative 9.2e-15.
 
-**Speed: pydada2 is 1.6x faster and uses 15 % less memory** (median of 2 runs, 8 threads):
+**What changed since the previous version.** It created the clusters of 8 of the 724 denoising
+runs in a different order than R (same ASVs and abundances). The cause was a Poisson tail that
+underflowed to 0 where R returns a tiny subnormal number ([`REVIEW.md`](REVIEW.md) §1.1). That
+is fixed, so these runs now match R too.
 
-| stage | R | pydada2 | speed-up |
-|---|---|---|---|
-| filter_and_trim | 56.0 s | 28.5 s | 2.0x |
-| learn_errors (F + R) | 133.8 s | 93.3 s | 1.4x |
-| derep_fastq (F + R) | 58.3 s | 19.1 s | 3.1x |
-| dada (F + R) | 110.2 s | 85.6 s | 1.3x |
-| merge_pairs | 21.6 s | 13.9 s | 1.5x |
-| make_sequence_table + remove_bimera_denovo | 0.27 s | 0.23 s | 1.2x |
-| assign_taxonomy (SILVA) | 76.8 s | 51.7 s | 1.5x |
-| add_species (SILVA) | 25.0 s | 2.2 s | 11.4x |
-| **total** | **8.0 min** | **4.9 min** | **1.6x** |
-| peak memory (RSS) | 6.9 GiB | 5.9 GiB | 1.2x |
+**Taxonomy:** 412 of 420 ASVs are identical at every level. The other 8 differ at genus only,
+where R's bootstrap was 41–52.
 
-What scales with the data set:
+**pydada2 is 4.5x faster than R** (median of 2 runs, 8 threads):
 
-- **Speed-up:** the speed-up shrinks from 1.8x (MiSeq SOP) to 1.6x.
-- **Denoising and error learning:** these dominate on larger data, and both tools run the same
-  per-sample, alignment-bound C++ algorithm, so pydada2 gains only 1.3–1.4x there.
-- **Taxonomy:** the time is nearly constant (~1 min in R, ~50 s in pydada2), because building
-  the SILVA reference model is a fixed cost.
+| stage | R | before | **now** | now vs R |
+|---|---|---|---|---|
+| filter_and_trim | 53.3 s | 28.2 s | **20.4 s** | 2.6x |
+| learn_errors (F + R) | 129.4 s | 92.6 s | **16.1 s** | 8.0x |
+| derep_fastq (F + R) | 57.4 s | 18.8 s | **19.3 s** | 3.0x |
+| dada (F + R) | 107.3 s | 84.2 s | **41.1 s** | 2.6x |
+| merge_pairs | 21.4 s | 3.6 s | **1.5 s** | 13.9x |
+| make_sequence_table + remove_bimera_denovo | 0.26 s | 0.22 s | **0.13 s** | 2.0x |
+| assign_taxonomy (SILVA) | 75.7 s | 50.2 s | **3.0 s** | 25.2x |
+| add_species (SILVA) | 24.3 s | 2.2 s | **1.8 s** | 13.8x |
+| **total** | **7.8 min** | **4.7 min** | **103 s** | **4.5x** |
+| peak memory (RSS) | 6.9 GiB | 5.9 GiB | **6.5 GiB** | 1.1x |
 
-[`REVIEW.md`](REVIEW.md) §5 identifies output-preserving changes to all of these, measured at
-11x faster than R on MiSeq SOP.
+**Against the previous version**, this is 2.7x faster overall.
+
+- **Dereplication** is unchanged code and runs at the same speed: the per-run ranges overlap.
+- **Peak memory** is 0.6 GiB higher. That is the price of the alignment cache (bounded at
+  1 GiB per fit) and of denoising samples concurrently.
 
 To reproduce (downloads another 845 MB):
 
@@ -195,12 +216,25 @@ uv run python benchmarks/dataset/report.py benchmarks/dataset/results/stability 
     benchmarks/dataset/REPORT_stability.md Stability
 ```
 
+### Micro-benchmarks
+
 Per-function micro-benchmarks on the small bundled example data are in
 [`benchmarks/micro/REPORT.md`](benchmarks/micro/REPORT.md).
 
+- **Against R:** no stage is slower than R by more than 1.5x. `make_sequence_table` is level with
+  R (~0.1 ms per call); every other stage is faster.
+- **Against the previous pydada2:** stages are up to 10x faster. Two are marginally slower:
+  - `seq_complexity` (~8 %), because it now sums exactly like R's long-double `sum()`;
+  - `assign_species` (+0.05 ms per call), from a format check on the 14-sequence example
+    reference. On real SILVA data that stage is faster.
+  All other stages are faster or unchanged.
+- **Fair comparison:** both pydada2 versions ran from the same kind of storage. In the dev
+  container, the `/workspaces` bind mount adds ~1 ms per file operation.
+
 ## Status
 
-Work in progress, developed following [`spec.md`](spec.md). The distribution name `pydada2` is
+Work in progress, developed following [`spec.md`](spec.md). [`REVIEW.md`](REVIEW.md) is an
+independent review of the port, with the status of every finding. The distribution name `pydada2` is
 already used on PyPI by another project, so the final name is still to be decided.
 
 ## Citation

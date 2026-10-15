@@ -29,6 +29,57 @@ scripts were extended afterwards for the larger-dataset run (README, "Larger dat
 scripts and prototype diffs were kept in a temporary session scratchpad, not in the repo. The
 key ppois patch is reproduced below so that this document stands alone.
 
+## Status after the fixes (2026-10-15)
+
+The findings below were addressed on branches `fix/numerics`, `fix/python`, `fix/tests` and
+`fix/perf`, merged into `pydada2-main`, followed by a few direct commits. The rest of this
+document is the original review, unchanged.
+
+**Verification of the merged code:**
+- 1067 tests pass (874 parity), coverage 97 %, ruff/mypy clean.
+- The fixture generator reproduces every committed fixture byte-for-byte, apart from the two
+  documented nondeterministic files.
+- **MiSeq SOP:** every exact output is identical to R, taxonomy within §8.3, at 1 and 8 threads.
+  All outputs, taxonomy included, are bit-identical to the previous pydada2.
+- **Stability data set (362 samples):** every exact output is identical to R, **including the
+  per-sample denoising and merged pairs that differed before §1.1 was fixed**.
+
+| Finding | Status |
+|---|---|
+| §1.1 ppois underflow → cluster order | **Fixed.** Clean-room log-space tail. The `self_consist` parity test is now strict and ordered, and the Stability mismatches are gone. |
+| §1.2a ppois accuracy at large n | **Fixed:** max error vs a 45-digit reference 2.0e-10 → 2.7e-13 (Loader saddle-point + series). |
+| §1.2b ulp ties with `use_quals=False` | **Documented** (DEVIATIONS #5). Not seen with quality-aware λ. |
+| §1.3 loess failures | **Fixed:** NumPy port of netlib's 1-D loess used when skmisc aborts; ≤ 1.2e-12 vs R. |
+| §1.4 seqtab tie order; §1.5 priors | **Fixed**, pinned by R fixtures. |
+| §1.6 a, b, c, f, g, h, i, j, k; pickling; numpy `n_jobs` | **Fixed**, pinned by tests. b matches R: `flag_subseqs` has no effect and warns. h: `ErrorLearner` raises on conflicting `params`. |
+| §1.6 d, e, l, m | **Documented** in DEVIATIONS. |
+| §1.7 `birth_from` | **Fixed** (upstream bug). Other carry-overs unchanged. |
+| §2.1 thread-unsafe handlers | **Fixed:** thread-local with save/restore; TSan clean. |
+| §2.2 safety items | **Fixed:** err/quals validation, NaN-safe checks, `B` leak, thread-spawn failure, `kord_dist` off x86, k-mer size checks, `nwalign` ACGT check, int32 range checks, Dereplicator lock. |
+| §3 T1–T8 | **Fixed:** discriminating filter/derep/chimera fixtures, `match_pattern` test, Hypothesis and determinism tests, behaviour-change tests, R warnings compared, coverage gate on the full run only, DEVIATIONS/PARITY/CLAUDE.md rewritten. |
+| §4.1 CI/packaging | **Fixed in the workflow, but not yet run on GitHub.** Covers the slow step, `macos-15-intel`, a working sdist job, wheels tested with the suite incl. aarch64, SHA-pinned actions, `scikit-misc>=0.5.1`, `xopen`, C++ tests, offline Boost. **Open, for the maintainers:** licence version (spec Q9) and the PyPI name (Q1). |
+| §4.2 benchmark methodology | **Fixed:** looped sub-ms stages, equal work and threads, gc caveats. Reports regenerated (README). |
+| §5 P1–P7 and most smaller items | **Implemented**, bit-identical outputs; numbers in README. P8 (AVX2) was measured with no gain and dropped. Reusing the per-round raw/k-mer setup was replaced by parallelising it. |
+
+The final old-vs-new benchmarks found regressions introduced by the fixes themselves. All are
+fixed, with identical outputs:
+
+| Regression | Cause | Fix |
+|---|---|---|
+| `add_species` slower | the verbatim-header change read the 530 MB SILVA species file twice; the binding copied ~0.5 GB of reference strings on every call | one dnaio-equivalent FASTA pass that keeps verbatim headers; references passed to C++ as string views |
+| `assign_species` (micro) 0.8 → 12 ms | xopen started a decompression thread on every open | threaded decompression only for files ≥ 4 MB |
+| `make_sequence_table` slower than R | pandas overhead | columns ordered in NumPy before building the DataFrame; now level with R |
+| `derep_fastq` ~6 % slower on Stability | an `s if s.isupper() else s.upper()` guard meant to skip copies is 3–4x slower than `str.upper()`, which has an ASCII fast path that `isupper()` lacks | reverted to plain `upper()` |
+
+A further apparent regression in the micro suite was an artefact, not a code change. The main
+checkout sits on a slow WSL bind mount, where each `stat`/`open` costs ~1 ms. Both pydada2
+versions are therefore now benchmarked from `/tmp` worktrees.
+
+Still open:
+- the MANIFEST hard-codes `upstream_commit` even for Bioconductor installs;
+- CI has to run once on GitHub;
+- macOS/Windows parity is therefore still unverified.
+
 ## Verdict
 
 **The conversion works, and the core is faithful.** The C++ diffs are glue apart from the items

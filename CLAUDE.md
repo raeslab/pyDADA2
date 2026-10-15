@@ -33,12 +33,14 @@ discovered while executing it. Keep both up to date at the end of every phase.
 ```bash
 # R reference (installed by scripts/devcontainer-post-create.sh into $R_LIBS_USER)
 R CMD INSTALL --no-docs --library="$R_LIBS_USER" reference/r-dada2
-Rscript tests/reference/generate_reference.R      # regenerate fixtures (~20 s)
+Rscript tests/reference/generate_reference.R      # regenerate fixtures (~3.5 min; then `git checkout --`
+                                                  # taxonomy.json.gz + MANIFEST.json, nondeterministic)
 ```
 
 ```bash
 uv sync --all-groups                    # env + editable build (C++ rebuilds on import)
-uv run pytest                           # tests + coverage;  -m "not slow" / -m parity / -n auto
+uv run pytest -n auto --cov-fail-under=90   # full run with the coverage gate (CI); marker subsets
+                                        # (-m parity, -m "not slow", -m slow --no-cov) don't gate
 uv run ruff format . && uv run ruff check . && uv run mypy src     # gates (spec §10.1)
 ./scripts/gen_stubs.sh                  # regenerate src/pydada2/_core.pyi after binding changes
 uv sync --all-groups --reinstall-package pydada2   # after deleting build/ (editable hook needs it)
@@ -46,6 +48,11 @@ Rscript benchmarks/micro/run_r.R 7 /tmp/r.json && uv run python benchmarks/micro
   && uv run python benchmarks/micro/report.py /tmp/r.json /tmp/py.json   # micro-benchmarks
 benchmarks/dataset/download.sh && uv run python benchmarks/dataset/run.py 3 1 8 \
   && uv run python benchmarks/dataset/report.py           # phase 11 MiSeq SOP benchmark (~1 h)
+benchmarks/dataset/download.sh --stability && uv run python benchmarks/dataset/run.py \
+  --fastq-dir Stability --results benchmarks/dataset/results/stability 2 8   # 362 samples (~30 min)
+# old vs new pydada2: run.py --tool py --python <other venv>/bin/python --results <dir_before>, then
+# report.py <results> <REPORT.md> <dataset> <dir_before>; micro: report.py r.json py.json out.md py_before.json
+cmake -S . -B build/cpp-tests -DDADA2_BUILD_CPP_TESTS=ON -Dnanobind_DIR=... && ctest --test-dir build/cpp-tests
 uv build --no-build-isolation --python "$UV_PROJECT_ENVIRONMENT/bin/python"   # sdist + wheel
 ```
 
@@ -57,7 +64,8 @@ Build notes:
 - Wheels: `wheel.py-api = "cp312"` → one abi3 wheel for CPython ≥ 3.12, per-version for 3.11.
 - clangd reads `build/cp312-abi3-linux_x86_64/compile_commands.json` (see `.clangd`).
 - Boost.Math: pinned standalone 1.86 fetched at configure time by default (`DADA2_FETCH_BOOST=ON`,
-  identical on every platform); `DADA2_FETCH_BOOST=OFF` uses system headers (offline builds).
+  identical on every platform); `DADA2_FETCH_BOOST=OFF` never downloads: system headers or
+  `-DDADA2_BOOST_MATH_INCLUDE=...` (FATAL_ERROR if missing).
 - Memory check: `./scripts/asan_check.sh` (ASan build of `_core`, throwaway venv, preloads
   libasan + libstdc++, fails on ASan errors or leaks with frames in cpp/core|cpp/bindings).
 - Fast C++ iteration without the editable hook: `cmake --build build/dev` (configure once as in
@@ -81,6 +89,18 @@ Build notes:
   timestamp): upstream breaks taxonomy ties with `std::random_device`. Measured R-vs-R on the
   fixture data: bootstrap |Δ| ≤ 2 (median 0); `minBoot=50` assignments 99/100 identical on
   full-length queries. Python-vs-R taxonomy tolerances must account for this.
+- Review-fix fixtures (sections at the end of the generator, each self-seeded):
+  - numerics: `ppois_extended`, `complexity_thresholds`, `match_pattern_degenerate`;
+  - python layer: `loess_degenerate`, `review_python`;
+  - coverage: `filter_coverage` (every filter bites; the generator asserts it), `derep_coverage`,
+    `chimera_coverage` (methods/options disagree);
+  - inputs: `cov_F/R`, `derep_iupac`, `chimeric_sam1F`, `binned_singletons`, `priors.fa`,
+    `species_tokens.fa`, `with_n`.
+- `run_filter` records R's warnings, and the parity tests require exactly those warnings
+  (`rparity.r_warnings`).
+- `e2e.json` uses learned errors and holds no taxonomy, because R's taxonomy is not reproducible
+  even with a fixed seed.
+- `rparity` takes `EXTDATA` from the installed package, so the suite also runs against wheels.
 
 ## C++ core decisions (phase 2)
 
@@ -133,8 +153,8 @@ Build notes:
   is within 50 ± 3σ. The original "≥95 % identical" is not attainable on the small fixture sets.
 - `TaxonomyClassifier.predict(seqs, return_bootstrap=True)` returns both in one pass;
   `predict_bootstrap` exists for the spec'd API (re-runs with the same seed ⇒ same values).
-- Plot functions return matplotlib Figures; data helpers (`quality_profile_stats`,
-  `error_plot_data`) are tested exactly against R's plotQualityProfile summary.
+- Plot functions return matplotlib Figures; `quality_profile_stats` is tested exactly against
+  R's plotQualityProfile summary (`error_plot_data` is not compared with R).
 
 ## Phase 11 decisions
 
@@ -151,7 +171,58 @@ Build notes:
 - `scripts/asan_check.sh` venv now installs matplotlib (needed since the phase-9 plotting tests;
   delete `/tmp/pydada2-asan/venv` to recreate an old one).
 
+## REVIEW.md fixes (2026-10-15) decisions
+
+- Development of large changes in parallel used git worktrees with their **own venvs**
+  (`UV_PROJECT_ENVIRONMENT=<wt>/.venv uv sync --all-groups`, then `<wt>/.venv/bin/python -m ...`);
+  never `uv run` there (the global UV_PROJECT_ENVIRONMENT points at the main tree's venv).
+- `ppois_upper`: Loader saddle-point dpois + series below the mode (clean-room, stats.cpp header),
+  direct λ^m e^-λ/m! for λ < 1, log space below DBL_MIN; Boost `gamma_p` at/above the mode. Don't
+  revert to plain `gamma_p`: it underflows to 0 where R returns a subnormal (changed DADA cluster
+  order vs R, REVIEW.md §1.1) and loses 1e-10 at large n.
+- `seq_complexity` sums in long double like R's `sum()` (double-double on MSVC).
+- loess: skmisc on the normal path; when skmisc raises on R *warnings* (few quality scores),
+  `pydada2._loess` (NumPy port of the netlib 1-D interpolate algorithm) gives R's fit (≤ 1.2e-12).
+- `get_uniques` sorts when merging duplicates (R `tapply`); species references are read with
+  `read_fasta(raw_ids=True)` (dnaio strips trailing whitespace); `ErrorLearner` raises when
+  `params` conflicts with its own `max_consist`/`omega_c`.
+- Threading: `parallel_for` runs on a process-wide persistent pool (`parallel.cpp`) serving
+  concurrent and nested regions (the caller works on its own region; capped at chunks/hardware;
+  thread-creation failure non-fatal; reset after fork). Log/interrupt handlers are thread-local
+  (`ScopedHandlers` restores); `ScopedCancel` stops concurrent work.
+- `DADA.fit` uses `_core.dada_uniques_batch`: samples concurrently (largest first), n_threads per
+  sample on the shared pool; with verbose >= 2 one at a time. Multi-round fits (self-consistency,
+  pseudo-pooling) own an `AlignmentCache` (1 GiB budget, `denoise._ALIGNMENT_CACHE_BYTES`): k-mer
+  distances + packed substitutions per (centre, raw); λ recomputed with the same multiplication
+  order (prefix products). No global state: `dada()` after `learn_errors` reuses nothing.
+- Taxonomy table is k-mer-major `[4^8][ngenus padded to 16]`, built sparsely in parallel; the
+  classifier sums query rows for all genera at once (exact: per-genus order kept, log-probs < 0).
+  Fitted models pickle (the table, ~1.3 GB for SILVA). Only the used prefix of the uniform stream
+  is drawn.
+- No `-march`/`target_clones`: AVX2 was measured with no gain (rows ~9 cells; taxonomy is
+  memory-bound).
+- FASTQ writing runs in a background thread (≤ 1 chunk pending); paired mates filtered
+  concurrently; phiX words matched as 2-bit codes with a bitmap, in parallel.
+- Every performance change was verified bit-identical on MiSeq SOP (all outputs incl. taxonomy at
+  the same seed, 1 and 8 threads) and on Stability.
+
 ## Gotchas found so far
+
+- **Benchmark from comparable storage.** `/workspaces` (the dev-container bind mount) costs
+  ~1 ms per `stat`/`open`. Example data read from a checkout there makes tiny micro stages look
+  10x slower than the same code under `/tmp`. Compare pydada2 versions from equivalent locations
+  (the final runs used `/tmp` worktrees with their own venvs).
+- **`s if s.isupper() else s.upper()` is 3–4x slower than `s.upper()`:** `upper()` has an ASCII
+  fast path and `isupper()` does not. Measure "copy-avoiding" micro-optimisations before keeping
+  them.
+- **xopen starts a decompression thread per open by default** (~5 ms of start-up/shutdown).
+  `read_fasta` uses `threads=0` for files under 4 MB.
+
+- `generate_reference.R` sections run at top level: a loop variable named like a helper
+  (`mm <- matchPattern(...)`) silently replaced the `mm()` mergePairs helper used by a later
+  section. Use distinct names (or `local()`) in new sections.
+- The sdist exclude pattern `"tests/"` is gitignore-style and also matched `cpp/tests/`; use
+  `"/tests/"`.
 
 - R partial argument matching: a helper with a `name` formal swallowed `n = 300`
   (`filterAndTrim`'s chunk size). Use dot-prefixed formals in R helpers.
@@ -199,4 +270,6 @@ Fresh-history setup (human, once): `git switch --orphan pydada2-main`, then
 - phase 9: plotting (+ exact quality-profile stats), align module, README, CITATION.cff, e2e test, abi3 wheel fix
 - phase 10: PARITY.md sign-off, micro-benchmarks (benchmarks/micro: run_r.R, run_py.py, report.py, REPORT.md)
 - phase 11: MiSeq SOP + SILVA 138.2 benchmark vs R (benchmarks/dataset), faster species matching, README benchmark section
+- review: REVIEW.md + Stability (362-sample) benchmark (dff04da)
+- review fixes: branches fix/numerics, fix/python, fix/tests, fix/perf merged (ppois underflow/accuracy, loess fallback, R-parity fixes, discriminating fixtures, CI, ~6-12x faster with identical output)
 

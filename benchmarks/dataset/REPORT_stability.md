@@ -7,11 +7,11 @@ process.
 
 * Data: Stability (Kozich et al. 2013), 362 samples, 16S V4, 2x250 (3,651,784 read pairs); SILVA 138.2 DADA2 training set (to genus) and species set
 * R: R version 4.6.1 (2026-06-24) / dada2 1.36.0
-* Python: Python 3.13.15 / pydada2 0.1.0
+* Python: Python 3.13.15 / pydada2 0.1.0 (5e6453a)
 * Machine: Intel(R) Core(TM) Ultra 7 265H, 16 logical CPUs, Linux
 * Runs: 2 x R @ 8 thr, 2 x py @ 8 thr
 
-## Results
+## Results: identical
 
 pydada2 vs R at 8 thread(s), first run of each:
 
@@ -19,8 +19,8 @@ pydada2 vs R at 8 thread(s), first run of each:
 |---|---|
 | read tracking table | yes |
 | unique sequences per sample (derep) | yes |
-| denoised ASVs + abundances per sample (F and R) | **NO** (8 sample(s): same ASVs and abundances, different cluster order) |
-| merged pairs (sequence, abundance, F/R ASV index) | **NO** (8 sample(s): same merged sequences and abundances, different cluster order) |
+| denoised ASVs + abundances per sample (F and R) | yes |
+| merged pairs (sequence, abundance, F/R ASV index) | yes |
 | sequence table (ASVs, column order, counts) | yes |
 | chimera calls | yes |
 | error rates (learn_errors F and R) | max rel. difference 9.2e-15 |
@@ -47,7 +47,7 @@ breaks ties with `std::random_device`, so R runs are not exactly reproducible ei
 | identical Species | 420 | 420 |
 | identical at all levels | 412 | 420 |
 | median \|Δ bootstrap\| | 0 | 0 |
-| max \|Δ bootstrap\| | 23 | 0 |
+| max \|Δ bootstrap\| | 23 | 1 |
 | entries outside 3 sigma binomial noise | 1 | 0 |
 | disagreements with R bootstrap far from 50 | 0 | 0 |
 
@@ -59,18 +59,56 @@ Median wall time per stage over the repeats (ratio = R / pydada2, > 1 means pyda
 
 | stage | R 8 thr | pydada2 8 thr | speed-up |
 |---|---|---|---|
-| filter_and_trim | 56.0 s | 28.5 s | 2.0x |
-| learn_errors_F | 63.9 s | 43.4 s | 1.5x |
-| learn_errors_R | 69.9 s | 49.9 s | 1.4x |
-| derep_F | 32.8 s | 10.3 s | 3.2x |
-| derep_R | 25.5 s | 8.8 s | 2.9x |
-| dada_F | 64.0 s | 49.7 s | 1.3x |
-| dada_R | 46.2 s | 35.9 s | 1.3x |
-| merge_pairs | 21.6 s | 13.9 s | 1.5x |
-| make_sequence_table | 56 ms | 78 ms | 0.7x |
-| remove_bimera_denovo | 214 ms | 148 ms | 1.4x |
-| assign_taxonomy | 76.8 s | 51.7 s | 1.5x |
-| add_species | 25.0 s | 2.2 s | 11.4x |
-| **total** | 8.0 min | 4.9 min | 1.6x |
-| wall time incl. start-up | 8.2 min | 4.9 min | 1.7x |
-| peak RSS | 6.91 GiB | 5.90 GiB | 1.2x |
+| filter_and_trim | 53.3 s | 20.4 s | 2.6x |
+| learn_errors_F | 61.2 s | 7.9 s | 7.8x |
+| learn_errors_R | 68.2 s | 8.2 s | 8.3x |
+| derep_F | 32.3 s | 10.5 s | 3.1x |
+| derep_R | 25.1 s | 8.8 s | 2.8x |
+| dada_F | 61.6 s | 25.2 s | 2.4x |
+| dada_R | 45.7 s | 15.9 s | 2.9x |
+| merge_pairs | 21.4 s | 1.5 s | 13.9x |
+| make_sequence_table | 55 ms | 17 ms | 3.1x |
+| remove_bimera_denovo | 208 ms | 117 ms | 1.8x |
+| assign_taxonomy | 75.7 s | 3.0 s | 25.2x |
+| add_species | 24.3 s | 1.8 s | 13.8x |
+| **total** | 7.8 min | 103.2 s | 4.5x |
+| wall time incl. start-up | 7.9 min | 104.9 s | 4.5x |
+| peak RSS | 6.91 GiB | 6.52 GiB | 1.1x |
+
+## pydada2: this version vs the previous one
+
+* Previous: Python 3.13.15 / pydada2 0.1.0 (dff04da)
+* This version: Python 3.13.15 / pydada2 0.1.0 (5e6453a)
+
+Outputs at 8 thread(s), first run of each:
+
+| output | identical to the previous version |
+|---|---|
+| read tracking table | yes |
+| unique sequences per sample (derep) | yes |
+| denoised ASVs + abundances per sample (F and R) | no (8 sample(s): same ASVs and abundances, different cluster order) |
+| merged pairs (sequence, abundance, F/R ASV index) | no (8 sample(s): same merged sequences and abundances, different cluster order) |
+| sequence table (ASVs, column order, counts) | yes |
+| chimera calls | yes |
+| error rates | max rel. difference 0.0e+00 |
+| taxonomy and bootstraps (same seed) | yes |
+
+Median wall time per stage (speed-up = previous / this version):
+
+| stage | previous 8 thr | now 8 thr | speed-up |
+|---|---|---|---|
+| filter_and_trim | 28.2 s | 20.4 s | 1.4x |
+| learn_errors_F | 43.1 s | 7.9 s | 5.5x |
+| learn_errors_R | 49.5 s | 8.2 s | 6.0x |
+| derep_F | 10.2 s | 10.5 s | 1.0x |
+| derep_R | 8.6 s | 8.8 s | 1.0x |
+| dada_F | 49.1 s | 25.2 s | 1.9x |
+| dada_R | 35.1 s | 15.9 s | 2.2x |
+| merge_pairs | 3.6 s | 1.5 s | 2.3x |
+| make_sequence_table | 74 ms | 17 ms | 4.3x |
+| remove_bimera_denovo | 141 ms | 117 ms | 1.2x |
+| assign_taxonomy | 50.2 s | 3.0 s | 16.7x |
+| add_species | 2.2 s | 1.8 s | 1.2x |
+| **total** | 4.7 min | 103.2 s | 2.7x |
+| wall time incl. start-up | 4.7 min | 104.9 s | 2.7x |
+| peak RSS | 5.87 GiB | 6.52 GiB | 0.9x |
