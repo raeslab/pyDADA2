@@ -23,11 +23,15 @@
 //    which has no cancellation when x ~ mu (the naive formula loses ~1e-11 relative at
 //    m ~ 1e5). Results below DBL_MIN are computed as exp(log P) with a single rounding, so
 //    subnormal tails are kept (R returns them as well).
+//    For lambda < 1 (DADA2's typical expected read counts) dpois = lambda^m e^-lambda / m! is
+//    evaluated directly while lambda^m is a normal number: the log-space form rounds an
+//    exponent of size m |log lambda| and would map lambdas one ulp apart to the same p.
 //
 // Measured against a 45-digit reference (mpmath) on n in [0, 2e6], lambda/n in [0.05, 2],
 // lambda down to 1e-320 and a dense grid around the underflow boundary: max relative error
-// 6e-13 (largest near p ~ 1e-300, where the exponent is ~700), identical zero/non-zero pattern
-// as R. See tests/parity/test_core_lowlevel.py::test_ppois_upper_extended.
+// 5.4e-13 (largest near p ~ 1e-300, where the exponent is ~700; 4e-16 for lambda < 1),
+// identical zero/non-zero pattern as R. See
+// tests/parity/test_core_lowlevel.py::test_ppois_upper_extended.
 
 #include "stats.h"
 
@@ -53,6 +57,7 @@ constexpr double kLnSqrt2Pi = 0.918938533204672741780329736406;  // log(sqrt(2 p
 constexpr double kTwoPi = 6.283185307179586476925286766559;
 constexpr double kEps = std::numeric_limits<double>::epsilon();
 constexpr double kLogDblMin = -708.39641853226410622;  // log(DBL_MIN)
+constexpr double kDblMin = std::numeric_limits<double>::min();
 
 // Remainder of Stirling's approximation, log(x!) - [(x + 1/2) log x - x + log sqrt(2 pi)],
 // for integer-valued x >= 1.
@@ -119,6 +124,17 @@ double ppois_upper(int n, double lambda) {
   const double m = static_cast<double>(n) + 1.0;
   // P(X > n) = P(X >= m) = regularized lower incomplete gamma P(m, lambda).
   if (lambda >= m) return boost::math::gamma_p(m, lambda, Policy());
+  if (lambda < 1.0 && m <= 170.0) {
+    // Small lambda: dpois = lambda^m e^-lambda / m! directly. pow keeps full relative resolution
+    // in lambda (the log-space form below rounds exponents of size m |log lambda|, so lambdas one
+    // ulp apart would tie). Only while lambda^m is a normal number; m! is finite for m <= 170.
+    const double pw = std::pow(lambda, m);
+    if (pw >= kDblMin) {
+      double fact = 1.0;
+      for (double k = 2.0; k <= m; k += 1.0) fact *= k;
+      return pw * (std::exp(-lambda) * upper_series(m, lambda) / fact);
+    }
+  }
   const double lx = -stirlerr(m) - bd0(m, lambda);       // log(dpois(m; lambda) * sqrt(2 pi m))
   const double f = upper_series(m, lambda) / std::sqrt(kTwoPi * m);
   const double lp = lx + std::log(f);                    // log P(X >= m); f <= 1, so lx >= lp
