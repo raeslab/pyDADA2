@@ -6,7 +6,12 @@ R values are always JSON arrays (``auto_unbox=FALSE``); use :func:`scalar` to un
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
+import math
+import warnings
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from functools import cache
 from importlib.resources import files
 from pathlib import Path
@@ -71,9 +76,11 @@ def rownames(obj: dict[str, Any]) -> list[str]:
 
 
 # ---------------------------------------------------------------- domain helpers ---
-def derep_fixture(name: str) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray]:
+def derep_fixture(
+    name: str, fixture: str = "derep"
+) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray]:
     """Return (sequences, abundances, mean quals [n x L], map 0-based/-1) for a derep fixture."""
-    d = load("derep")[name]
+    d = load(fixture)[name]
     seqs = list(d["uniques"]["sequence"])
     abund = np.array(d["uniques"]["abundance"], dtype=np.int64)
     qsum = np.array(
@@ -106,3 +113,106 @@ def assert_close_r(actual: Any, r_values: Any, rtol: float = 1e-10, err_msg: str
     assert actual.shape == expected.shape, (actual.shape, expected.shape, err_msg)
     assert not np.isfinite(actual[mask]).any(), f"{err_msg}: expected non-finite at R nulls"
     np.testing.assert_allclose(actual[~mask], expected[~mask], rtol=rtol, err_msg=err_msg)
+
+
+# ------------------------------------------------------------------- FASTQ outputs ---
+def fastq_digest(path: Path) -> dict[str, Any]:
+    """Python side of the generator's ``fq_digest``: ids, widths and md5 of "id\\nseq\\nqual\\n"."""
+    import dnaio
+
+    if not path.exists():
+        return {"exists": False}
+    ids, widths, txt = [], [], []
+    with dnaio.open(path) as fh:
+        for r in fh:
+            ids.append(r.name)
+            widths.append(len(r.sequence))
+            txt.append(f"{r.name}\n{r.sequence}\n{r.qualities}\n")
+    return {
+        "exists": True,
+        "n": len(ids),
+        "ids": ids,
+        "widths": widths,
+        "md5": hashlib.md5("".join(txt).encode()).hexdigest(),
+    }
+
+
+def check_fastq_output(path: Path, exp: dict[str, Any]) -> None:
+    """Assert that a FASTQ file has exactly the records R wrote (or is absent like R's)."""
+    got = fastq_digest(path)
+    assert got["exists"] == scalar(exp["exists"]), path
+    if got["exists"]:
+        assert got["n"] == scalar(exp["n"])
+        assert got["ids"] == exp["ids"]
+        assert got["widths"] == exp["widths"]
+        assert got["md5"] == scalar(exp["md5"])
+
+
+FILTER_ARGS = {
+    "truncLen": "trunc_len", "maxN": "max_n", "maxEE": "max_ee", "truncQ": "trunc_q",
+    "rm.phix": "rm_phix", "trimLeft": "trim_left", "trimRight": "trim_right", "minLen": "min_len",
+    "maxLen": "max_len", "minQ": "min_q", "rm.lowcomplex": "rm_lowcomplex", "n": "n",
+    "orient.fwd": "orient_fwd", "matchIDs": "match_ids",
+}  # fmt: skip
+
+
+def filter_kwargs(rparams: Any, paired: bool) -> dict[str, Any]:
+    """filterAndTrim arguments recorded by the generator -> filter_and_trim keyword arguments."""
+    out: dict[str, Any] = {}
+    for k, v in (rparams if isinstance(rparams, dict) else {}).items():
+        if isinstance(v, list):
+            v = [math.inf if x == "Inf" else x for x in v]
+            v = v[0] if (len(v) == 1 or not paired) else tuple(v)
+        out[FILTER_ARGS[k]] = v  # KeyError for an argument the tests do not map yet
+    if "n" in out:
+        out["n"] = int(out["n"])
+    return out
+
+
+@contextmanager
+def r_warnings(expected: Any) -> Iterator[None]:
+    """Run a block and require exactly R's warnings (messages, in order) as UserWarnings.
+
+    ``expected`` is the generator's recorded ``warnings`` (list of messages; [] for none).
+    Warnings of other categories (e.g. ResourceWarning) are ignored.
+    """
+    exp = [] if expected is None else list(expected)
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        yield
+    got = [str(w.message) for w in rec if issubclass(w.category, UserWarning)]
+    assert got == exp, f"warnings differ from R: {got} != {exp}"
+
+
+def call_with_r_warnings(expected: Any, fn: Callable[..., Any], *args: Any, **kw: Any) -> Any:
+    """``fn(*args, **kw)`` inside :func:`r_warnings`."""
+    with r_warnings(expected):
+        return fn(*args, **kw)
+
+
+def fixture_input(name: str) -> Path:
+    """Input file of a fixture: bundled example data or tests/reference/data/inputs."""
+    return EXTDATA / name if (EXTDATA / name).exists() else INPUTS / name
+
+
+def run_filter_case(fx: dict[str, Any], tmp_path: Path) -> None:
+    """Run one generator ``run_filter`` case; compare counts, output records and warnings."""
+    import pydada2 as dada2
+
+    paired = fx.get("inputs_rev") is not None
+    fwd = [fixture_input(f) for f in fx["inputs"]]
+    filt = [tmp_path / f"F_{i}_{p.name}" for i, p in enumerate(fwd)]
+    kwargs = filter_kwargs(fx["params"], paired)
+    rev = filt_rev = None
+    if paired:
+        rev = [fixture_input(f) for f in fx["inputs_rev"]]
+        filt_rev = [tmp_path / f"R_{i}_{p.name}" for i, p in enumerate(rev)]
+    with r_warnings(fx["warnings"]):
+        df = dada2.filter_and_trim(fwd, filt, rev, filt_rev, compress=True, **kwargs)
+    assert df["reads_in"].tolist() == fx["reads_in"]
+    assert df["reads_out"].tolist() == fx["reads_out"]
+    for p, exp in zip(filt, fx["outputs"], strict=True):
+        check_fastq_output(p, exp)
+    if paired:
+        for p, exp in zip(filt_rev, fx["outputs_rev"], strict=True):
+            check_fastq_output(p, exp)
