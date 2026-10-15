@@ -1,6 +1,10 @@
 """Build benchmarks/micro/REPORT.md from results_r.json and results_py.json (spec §9.1).
 
 Usage: uv run python benchmarks/micro/report.py results_r.json results_py.json [REPORT.md]
+                                                [results_py_before.json]
+
+With a fourth file (run_py.py run against an earlier pydada2), columns `before` and `speed-up`
+(= before / now) compare the two pydada2 versions.
 """
 
 from __future__ import annotations
@@ -41,6 +45,7 @@ def main() -> None:
     r = json.loads(Path(sys.argv[1]).read_text())
     p = json.loads(Path(sys.argv[2]).read_text())
     out = Path(sys.argv[3] if len(sys.argv) > 3 else "benchmarks/micro/REPORT.md")
+    b = json.loads(Path(sys.argv[4]).read_text()) if len(sys.argv) > 4 else None
     rm, pm = r["meta"], p["meta"]
     keys = sorted(k for k in p if k != "meta")
     lines = [
@@ -56,7 +61,16 @@ def main() -> None:
         "larger dataset (benchmarks/dataset).",
         "",
         f"* R: {rm['r_version']}, dada2 {rm['dada2']}, {rm['repeats']} repeats",
-        f"* Python {pm['python']}, pydada2 {pm['pydada2']}, {pm['repeats']} repeats",
+        f"* Python {pm['python']}, pydada2 {pm['pydada2']} ({pm.get('commit', '?')}), "
+        f"{pm['repeats']} repeats",
+        *(
+            [
+                f"* Before: pydada2 {b['meta']['pydada2']} ({b['meta'].get('commit', '?')}), "
+                f"{b['meta']['repeats']} repeats"
+            ]
+            if b
+            else []
+        ),
         f"* Machine: {pm['cores']} logical CPUs",
         f"* Chimera stages: example sequence table plus {pm.get('n_chimeras')} synthetic "
         "chimeras; assign_species: "
@@ -67,10 +81,19 @@ def main() -> None:
         if rm.get(what) != pm.get(what):
             lines += [f"**Warning: inputs differ between R and Python ({what}: "
                       f"{rm.get(what)} vs {pm.get(what)}).**", ""]  # fmt: skip
+    extra_h = " before | speed-up |" if b else ""
     lines += [
-        "| stage | threads | R | pydada2 | ratio | loops | R gc |",
-        "|---|---|---|---|---|---|---|",
+        "| stage | threads | R | pydada2 | ratio | loops | R gc |" + extra_h,
+        "|---|---|---|---|---|---|---|" + ("---|---|" if b else ""),
     ]
+
+    def vs_before(key: str) -> str:
+        if not b:
+            return ""
+        if key not in b:
+            return " n/a | n/a |"
+        return f" {fmt(b[key])} | {b[key] / p[key]:.1f}x |"
+
     ratios, only_py, notes = [], [], []
     rl, pl = rm.get("loops", {}), pm.get("loops", {})
     for key in keys:
@@ -89,7 +112,7 @@ def main() -> None:
         loops = f"{rl.get(key, '?')} / {pl.get(key, '?')}"
         lines.append(
             f"| {stage}{mark} | {nt} | {fmt(r[key])} | {fmt(p[key])} | {ratio:.2f} | {loops} "
-            f"| {gc[1] if gc else ''} |"
+            f"| {gc[1] if gc else ''} |{vs_before(key)}"
         )
     if notes:
         lines += [""] + [f"[{i}] `{s}`: {n}" for s, n, i in notes]
@@ -99,8 +122,8 @@ def main() -> None:
             "pydada2 multithreaded, where R has no multithreaded implementation (compare with the",
             "single-threaded R row above):",
             "",
-            "| stage | threads | pydada2 | R (1 thread) | ratio |",
-            "|---|---|---|---|---|",
+            "| stage | threads | pydada2 | R (1 thread) | ratio |" + extra_h,
+            "|---|---|---|---|---|" + ("---|---|" if b else ""),
         ]
         for key in only_py:
             stage, nt = key.split("@")
@@ -108,6 +131,7 @@ def main() -> None:
             ratio = f"{p[key] / r1:.2f}" if r1 else "n/a"
             lines.append(
                 f"| {stage} | {nt} | {fmt(p[key])} | {fmt(r1) if r1 else 'n/a'} | {ratio} |"
+                + vs_before(key)
             )
     over = [k for ratio, k in ratios if ratio > 1.5]
     lines += [

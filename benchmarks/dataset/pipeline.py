@@ -26,6 +26,19 @@ import numpy as np
 import pydada2 as dada2
 
 
+def source_commit() -> str:
+    """Short git commit of the pydada2 sources being run ("" if unknown)."""
+    import subprocess
+
+    try:
+        return subprocess.run(
+            ["git", "-C", str(Path(dada2.__file__).parent), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()  # fmt: skip
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+
+
 def main() -> None:
     threads = int(sys.argv[1])
     out = Path(sys.argv[2])
@@ -107,7 +120,8 @@ def main() -> None:
     res = {
         "meta": {
             "tool": "pydada2",
-            "version": f"Python {platform.python_version()} / pydada2 {dada2.__version__}",
+            "version": f"Python {platform.python_version()} / pydada2 {dada2.__version__}"
+            + (f" ({commit})" if (commit := source_commit()) else ""),
             "threads": threads,
         },
         "times": times,

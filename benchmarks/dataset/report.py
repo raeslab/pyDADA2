@@ -1,7 +1,8 @@
 """Compare and summarise the MiSeq SOP benchmark runs (spec §9.2, phase 11).
 
-Usage: uv run python benchmarks/dataset/report.py [results_dir] [report.md] [dataset]
-       (dataset: label used in the report, default "MiSeq SOP")
+Usage: uv run python benchmarks/dataset/report.py [results_dir] [report.md] [dataset] [baseline_dir]
+       (dataset: label used in the report, default "MiSeq SOP"; baseline_dir: py_t*_r* runs of an
+       earlier pydada2, e.g. from run.py --python <other venv>, compared with this version)
 
 Reads every <tool>_t<threads>_r<rep>/results.json (+ run.json) written by run.py, checks the
 outputs of pydada2 against R dada2 (exact for everything except taxonomy, which follows the
@@ -142,6 +143,65 @@ def taxonomy(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def versus_baseline(
+    runs: dict[tuple[str, int], list[dict[str, Any]]], baseline: Path, threads: list[int]
+) -> list[str]:
+    """Section comparing this pydada2 with an earlier one (outputs and speed)."""
+    old: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for p in sorted(baseline.iterdir()):
+        m = re.fullmatch(r"py_t(\d+)_r(\d+)", p.name)
+        if m and (p / "run.json").exists():
+            old[int(m[1])].append(load(p))
+    both = [t for t in threads if old.get(t) and runs.get(("py", t))]
+    if not both:
+        return []
+    new0, old0 = runs[("py", both[0])][0], old[both[0]][0]
+    checks = exact_checks(old0, new0)
+    same_tax = old0["taxa"] == new0["taxa"] and old0["boot"] == new0["boot"]
+    lines = [
+        "",
+        "## pydada2: this version vs the previous one",
+        "",
+        f"* Previous: {old0['meta']['version']}",
+        f"* This version: {new0['meta']['version']}",
+        "",
+        f"Outputs at {both[0]} thread(s), first run of each:",
+        "",
+        "| output | identical to the previous version |",
+        "|---|---|",
+    ]
+    lines += [
+        f"| {label} | {'yes' if checks[k] else 'no' + order_only(old0, new0, k)} |"
+        for label, k in EXACT
+    ]
+    lines += [
+        f"| error rates | max rel. difference {err_rtol(new0, old0):.1e} |",
+        f"| taxonomy and bootstraps (same seed) | {'yes' if same_tax else 'no'} |",
+        "",
+        "Median wall time per stage (speed-up = previous / this version):",
+        "",
+        "| stage |" + "".join(f" previous {t} thr | now {t} thr | speed-up |" for t in both),
+        "|---|" + "---|---|---|" * len(both),
+    ]
+    for s in [*STAGES, "wall"]:
+        label = {"total": "**total**", "wall": "wall time incl. start-up"}.get(s, s)
+        row = f"| {label} |"
+        for t in both:
+            f = (lambda d: d["run"]["wall_incl_startup"]) if s == "wall" else (
+                lambda d, s=s: d["times"][s])  # fmt: skip
+            o = statistics.median(f(d) for d in old[t])
+            n = statistics.median(f(d) for d in runs[("py", t)])
+            row += f" {fmt_t(o)} | {fmt_t(n)} | {o / n:.1f}x |"
+        lines.append(row)
+    row = "| peak RSS |"
+    for t in both:
+        o = statistics.median(d["run"]["max_rss_kib"] for d in old[t]) / 1024**2
+        n = statistics.median(d["run"]["max_rss_kib"] for d in runs[("py", t)]) / 1024**2
+        row += f" {o:.2f} GiB | {n:.2f} GiB | {o / n:.1f}x |"
+    lines.append(row)
+    return lines
+
+
 def fmt_t(s: float) -> str:
     return f"{s / 60:.1f} min" if s >= 120 else f"{s:.1f} s" if s >= 1 else f"{s * 1e3:.0f} ms"
 
@@ -160,6 +220,7 @@ def main() -> None:
     results = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE / "results"
     report = Path(sys.argv[2]) if len(sys.argv) > 2 else HERE / "REPORT.md"
     dataset = sys.argv[3] if len(sys.argv) > 3 else "MiSeq SOP"
+    baseline = Path(sys.argv[4]) if len(sys.argv) > 4 else None
     runs: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
     for p in sorted(results.iterdir()):
         m = re.fullmatch(r"(R|py)_t(\d+)_r(\d+)", p.name)
@@ -284,6 +345,8 @@ def main() -> None:
         p = med("py", t, lambda d: d["run"]["max_rss_kib"]) / 1024**2
         row += f" {r:.2f} GiB | {p:.2f} GiB | {r / p:.1f}x |"
     lines.append(row)
+    if baseline is not None:
+        lines += versus_baseline(runs, baseline, threads)
     report.write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
     ok = all(checks.values()) and tx["unexplained"] == 0

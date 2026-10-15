@@ -67,6 +67,19 @@ def chimera_table(st):  # type: ignore[no-untyped-def]
     return pd.concat([st, extra], axis=1), len(chims)
 
 
+def source_commit() -> str:
+    """Short git commit of the pydada2 sources being measured ("" if unknown)."""
+    import subprocess
+
+    try:
+        return subprocess.run(
+            ["git", "-C", str(Path(dada2.__file__).parent), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()  # fmt: skip
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+
+
 def main() -> None:
     repeats = int(sys.argv[1]) if len(sys.argv) > 1 else 7
     out = Path(sys.argv[2] if len(sys.argv) > 2 else "benchmarks/micro/results_py.json")
@@ -102,6 +115,7 @@ def main() -> None:
         "meta": {
             "python": platform.python_version(),
             "pydada2": dada2.__version__,
+            "commit": source_commit(),
             "repeats": repeats,
             "cores": os.cpu_count(),
             "min_sample": MIN_SAMPLE,
