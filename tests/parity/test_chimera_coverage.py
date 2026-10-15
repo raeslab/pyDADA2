@@ -122,10 +122,9 @@ def test_dada_with_chimeras(dada_chim):
     assert removed.tolist() == fx["removed"]["abundance"]
 
 
-# The fixture also holds R's flagSubseqs=TRUE calls ("subseqs"): R's isShiftDenovo never passes
-# flagSubseqs on (chimeras.R), so they equal the default calls. pydada2 currently honours the
-# flag (REVIEW.md §1.6b); that case is added once the behaviour is settled.
-SHIFT = {"default": {}, "ov100": {"min_overlap": 100}}
+# "subseqs": R's isShiftDenovo never passes flagSubseqs on to isShift (chimeras.R), so R's calls
+# equal the default ones; pydada2 matches that (and warns that the flag has no effect).
+SHIFT = {"default": {}, "ov100": {"min_overlap": 100}, "subseqs": {"flag_subseqs": True}}
 
 
 @pytest.mark.parametrize("case", sorted(SHIFT))
