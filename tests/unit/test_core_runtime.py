@@ -89,3 +89,65 @@ def test_taxonomy_validation():
     model, _ = _toy_model()
     with pytest.raises(ValueError, match="No seqs"):
         core.assign_taxonomy(model, [], [], False, 1, 1)
+
+
+def _dada_args():
+    from pydada2 import derep_fastq
+    from pydada2.datasets import err_balanced_f, example_path
+
+    drp = derep_fastq(example_path("sam1F.fastq.gz"))
+    seqs = drp.sequences
+    return (
+        seqs,
+        drp.uniques.to_numpy().tolist(),
+        [False] * len(seqs),
+        np.ascontiguousarray(err_balanced_f()),
+        np.ascontiguousarray(drp.quals),
+    )
+
+
+def test_concurrent_calls_with_logging_do_not_interfere():
+    # Handlers are thread-local: concurrent verbose calls from several Python threads each log
+    # through their own callback and give the same results as a serial call.
+    from concurrent.futures import ThreadPoolExecutor
+
+    args = _dada_args()
+    ref = core.dada_uniques(*args)
+    logs = {k: [] for k in range(4)}
+
+    def run(k):
+        return core.dada_uniques(*args, n_threads=2, verbose=True, log=logs[k].append)
+
+    with ThreadPoolExecutor(4) as ex:
+        outs = list(ex.map(run, range(4)))
+    for k, out in enumerate(outs):
+        assert out["sequence"] == ref["sequence"]
+        np.testing.assert_array_equal(out["map"], ref["map"])
+        assert any("ALIGN" in m for m in logs[k])
+    assert all(logs[k] == logs[0] for k in logs)
+
+
+def test_concurrent_assign_taxonomy():
+    from concurrent.futures import ThreadPoolExecutor
+
+    model, genera = _toy_model()
+    seqs = [g[20:280] for g in genera]
+    rcs = [_rc(s) for s in seqs]
+    ref = core.assign_taxonomy(model, seqs, rcs, True, 7, 1)
+    with ThreadPoolExecutor(8) as ex:
+        outs = list(ex.map(lambda _: core.assign_taxonomy(model, seqs, rcs, True, 7, 2), range(32)))
+    for out in outs:
+        for key in ("tax", "boot", "boot_tax"):
+            np.testing.assert_array_equal(out[key], ref[key])
+
+
+def test_scoped_handlers_restore_previous():
+    # A nested call that installs no log handler must not remove the outer call's handler:
+    # after the inner (handler-less) call returns, the outer thread logs again.
+    args = _dada_args()
+    msgs = []
+    core.dada_uniques(*args, verbose=True, log=msgs.append)
+    n = len(msgs)
+    core.dada_uniques(*args)
+    core.dada_uniques(*args, verbose=True, log=msgs.append)
+    assert len(msgs) == 2 * n

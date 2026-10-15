@@ -8,8 +8,9 @@
 
 namespace {
 
-dada2::LogHandler g_log;
-dada2::InterruptHandler g_interrupt;
+// Thread-local: concurrent calls from different threads each see only their own handlers.
+thread_local dada2::LogHandler g_log;
+thread_local dada2::InterruptHandler g_interrupt;
 
 std::string vformat(const char *fmt, va_list ap) {
   va_list ap2;
@@ -29,14 +30,15 @@ namespace dada2 {
 void set_log_handler(LogHandler handler) { g_log = std::move(handler); }
 void set_interrupt_handler(InterruptHandler handler) { g_interrupt = std::move(handler); }
 
-ScopedHandlers::ScopedHandlers(LogHandler log, InterruptHandler interrupt) {
+ScopedHandlers::ScopedHandlers(LogHandler log, InterruptHandler interrupt)
+    : prev_log_(std::move(g_log)), prev_interrupt_(std::move(g_interrupt)) {
   g_log = std::move(log);
   g_interrupt = std::move(interrupt);
 }
 
 ScopedHandlers::~ScopedHandlers() {
-  g_log = nullptr;
-  g_interrupt = nullptr;
+  g_log = std::move(prev_log_);
+  g_interrupt = std::move(prev_interrupt_);
 }
 
 }  // namespace dada2
