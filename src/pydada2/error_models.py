@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import itertools
 import warnings
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -20,6 +20,7 @@ import numpy.typing as npt
 import pandas as pd
 
 from ._base import BaseEstimator
+from ._loess import loess_interpolate_1d
 from ._parallel import effective_n_jobs
 from ._validation import check_is_fitted
 from .io import QualityType
@@ -100,9 +101,29 @@ def _fill_edges(pred: FloatArray) -> FloatArray:
     return pred
 
 
-def _loess_fit(trans: FloatArray, q: FloatArray) -> FloatArray:
+def _skmisc_loess(x: FloatArray, y: FloatArray, w: FloatArray, newx: FloatArray) -> FloatArray:
     from skmisc.loess import loess  # same netlib dloess code as R's stats::loess
 
+    lo = loess(
+        x,
+        y,
+        weights=w,
+        span=0.75,
+        degree=2,
+        family="gaussian",
+        surface="interpolate",
+        statistics="approximate",
+        trace_hat="exact",
+        cell=0.2,
+        iterations=4,
+        normalize=True,
+    )
+    lo.fit()
+    out: FloatArray = np.asarray(lo.predict(newx).values, dtype=np.float64)
+    return out
+
+
+def _loess_fit(trans: FloatArray, q: FloatArray) -> FloatArray:
     est = np.empty((12, trans.shape[1]), dtype=np.float64)
     for k, (i, j) in enumerate(_substitutions()):
         errs = trans[4 * i + j]
@@ -112,24 +133,14 @@ def _loess_fit(trans: FloatArray, q: FloatArray) -> FloatArray:
         ok = np.isfinite(rlogp)
         if ok.sum() < 3:
             raise ValueError("Error rates could not be estimated (too few observations).")
-        lo = loess(
-            q[ok],
-            rlogp[ok],
-            weights=tot[ok],
-            span=0.75,
-            degree=2,
-            family="gaussian",
-            surface="interpolate",
-            statistics="approximate",
-            trace_hat="exact",
-            cell=0.2,
-            iterations=4,
-            normalize=True,
-        )
-        lo.fit()
         pred = np.full(q.size, np.nan)
         inside = (q >= q[ok].min()) & (q <= q[ok].max())  # R's predict() gives NA outside
-        pred[inside] = lo.predict(q[inside]).values  # noqa: PD011 (skmisc object, not pandas)
+        try:
+            pred[inside] = _skmisc_loess(q[ok], rlogp[ok], tot[ok], q[inside])
+        except ValueError:
+            # skmisc aborts on near-singular local fits (few observed quality scores), which R's
+            # loess only warns about (and dada() suppresses): use the same algorithm in NumPy.
+            pred[inside] = loess_interpolate_1d(q[ok], rlogp[ok], tot[ok], q[inside])
         est[k] = 10 ** _fill_edges(pred)
     return _expand(_clamp(est))
 
@@ -451,7 +462,9 @@ class ErrorLearner(BaseEstimator):
     omega_c : float, default=0
         ``omega_c`` used while learning (R default for ``learnErrors``).
     params : DadaParams or dict, optional
-        Other DADA parameters (e.g. ``{"band_size": 32}`` for PacBio).
+        Other DADA parameters (e.g. ``{"band_size": 32}`` for PacBio). ``max_consist`` and
+        ``omega_c`` come from the arguments above; giving a different value in ``params``
+        raises ``ValueError``.
     quality_type : {"auto", "FastqQuality", "SFastqQuality"}
         Quality encoding of FASTQ inputs.
     n_jobs : int, optional
@@ -506,7 +519,7 @@ class ErrorLearner(BaseEstimator):
 
         Parameters
         ----------
-        X : path, Dereplication, or sequence of them
+        X : path, Dereplication, or a sequence or mapping (name -> sample) of them
             Samples (FASTQ files are dereplicated as needed).
         y : None
             Ignored.
@@ -523,7 +536,12 @@ class ErrorLearner(BaseEstimator):
         from .derep import Dereplication, derep_fastq
 
         log = logging.getLogger("pydada2")
-        items = [X] if isinstance(X, str | os.PathLike | Dereplication) else list(X)
+        if isinstance(X, str | os.PathLike | Dereplication):
+            items = [X]
+        elif isinstance(X, Mapping):  # R: a named list of derep objects or named file paths
+            items = list(X.values())
+        else:
+            items = list(X)
         if not items:
             raise ValueError("No samples provided.")
         if self.randomize:
@@ -555,11 +573,27 @@ class ErrorLearner(BaseEstimator):
             )
         if self.params is None:
             base = DadaParams()
+            given: dict[str, Any] = {}
         elif isinstance(self.params, DadaParams):
             base = self.params
+            default = DadaParams()
+            given = {
+                k: getattr(base, k)
+                for k in ("max_consist", "omega_c")
+                if getattr(base, k) != getattr(default, k)
+            }
         else:
-            base = DadaParams().replace(**dict(self.params))
-        params = base.replace(max_consist=int(self.max_consist), omega_c=float(self.omega_c))
+            given = dict(self.params)
+            base = DadaParams().replace(**given)
+        own = {"max_consist": int(self.max_consist), "omega_c": float(self.omega_c)}
+        conflicts = sorted(k for k in own if k in given and given[k] != own[k])
+        if conflicts:
+            # R: MAX_CONSIST and OMEGA_C are arguments of learnErrors itself, not DADA options.
+            raise ValueError(
+                f"Set {', '.join(conflicts)} with the ErrorLearner argument(s) of the same name, "
+                "not in params (the values differ)."
+            )
+        params = base.replace(**own)
         dd = DADA(
             err=None,
             error_model=self.error_model,
@@ -587,7 +621,7 @@ def learn_errors(X: Any, /, **kwargs: Any) -> ErrorLearner:
 
     Parameters
     ----------
-    X : path, Dereplication, or sequence of them
+    X : path, Dereplication, or a sequence or mapping of them
         Samples.
     **kwargs
         Parameters of :class:`ErrorLearner`.

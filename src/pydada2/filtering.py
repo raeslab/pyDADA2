@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import logging
 import math
+import numbers
 import re
 import warnings
 from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, NamedTuple
@@ -92,20 +93,31 @@ def _as_pair(value: Any, name: str) -> tuple[Any, Any]:
     raise ValueError(f"{name} must be a scalar or a (forward, reverse) pair.")
 
 
+_INT_MIN, _INT_MAX = -(2**31), 2**31 - 1
+# Thresholds that are only compared with read properties: R accepts +-Inf for them.
+_INF_OK = ("min_len", "max_n", "min_q")
+
+
 def _make_mate(values: dict[str, Any]) -> _Mate:
+    ints: dict[str, int] = {}
     for key in ("trunc_q", "trunc_len", "min_len", "trim_left", "trim_right", "max_n", "min_q"):
         v = values[key]
-        if isinstance(v, bool) or float(v) != int(v):
+        inf_ok = key in _INF_OK and not isinstance(v, bool) and isinstance(v, numbers.Real)
+        if inf_ok and math.isinf(float(v)):
+            ints[key] = _INT_MAX if float(v) > 0 else _INT_MIN
+            continue
+        if isinstance(v, bool) or not math.isfinite(float(v)) or float(v) != int(v):
             raise ValueError(f"{key} must be an integer, got {v!r}.")
+        ints[key] = int(v)
     return _Mate(
-        trunc_q=int(values["trunc_q"]),
-        trunc_len=int(values["trunc_len"]),
+        trunc_q=ints["trunc_q"],
+        trunc_len=ints["trunc_len"],
         max_len=float(values["max_len"]),
-        min_len=int(values["min_len"]),
-        trim_left=int(values["trim_left"]),
-        trim_right=int(values["trim_right"]),
-        max_n=int(values["max_n"]),
-        min_q=int(values["min_q"]),
+        min_len=ints["min_len"],
+        trim_left=ints["trim_left"],
+        trim_right=ints["trim_right"],
+        max_n=ints["max_n"],
+        min_q=ints["min_q"],
         max_ee=float(values["max_ee"]),
         rm_phix=bool(values["rm_phix"]),
         rm_lowcomplex=float(values["rm_lowcomplex"]),
@@ -151,22 +163,43 @@ def _check_orient(orient_fwd: str | None) -> str | None:
 
 
 class _LazyWriter:
-    """Opens the output file on the first write (R writes the first chunk even if empty)."""
+    """Opens the output file on the first write (R writes the first chunk even if empty).
+
+    Compression and writing run in a background thread (one chunk in flight, so memory stays
+    bounded) while the caller reads and filters the next chunk.
+    """
 
     def __init__(self, path: Path, compress: bool) -> None:
         self.path = path
         self.compress = compress
         self.fh: IO[bytes] | None = None
+        self._pool: ThreadPoolExecutor | None = None
+        self._pending: Future[None] | None = None
 
-    def write(self, data: bytes) -> None:
+    def _write(self, data: bytes) -> None:
         if self.fh is None:
             self.fh = open_fastq_writer(self.path, self.compress)
         self.fh.write(data)
 
+    def write(self, data: bytes) -> None:
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pydada2-writer")
+        if self._pending is not None:
+            self._pending.result()  # wait for (and re-raise errors of) the previous chunk
+        self._pending = self._pool.submit(self._write, data)
+
     def close(self) -> None:
-        if self.fh is not None:
-            self.fh.close()
-            self.fh = None
+        try:
+            if self._pending is not None:
+                pending, self._pending = self._pending, None
+                pending.result()
+        finally:
+            if self._pool is not None:
+                self._pool.shutdown(wait=True)
+                self._pool = None
+            if self.fh is not None:
+                self.fh.close()
+                self.fh = None
 
 
 def _remove_existing(path: Path) -> None:
@@ -409,6 +442,7 @@ rm_phix, rm_lowcomplex
     casava = "Undetermined"
     field = id_field
     inseqs = outseqs = 0
+    mates = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pydada2-mate")
     try:
         while True:
             cf = next(it_f, empty)
@@ -445,8 +479,14 @@ rm_phix, rm_lowcomplex
                 raise ValueError("Forward and reverse reads could not be matched by id.")
             if orient is not None:
                 cf, cr = _orient_paired(cf, cr, orient)
-            pass_f, s_f, e_f = _run_mate(cf.seqs, cf.quals, cf.offset, mate_f, n_threads)
-            pass_r, s_r, e_r = _run_mate(cr.seqs, cr.quals, cr.offset, mate_r, n_threads)
+            # The two mates are filtered concurrently (the kernel releases the GIL).
+            fut_r = mates.submit(_run_mate, cr.seqs, cr.quals, cr.offset, mate_r, n_threads)
+            try:
+                pass_f, s_f, e_f = _run_mate(cf.seqs, cf.quals, cf.offset, mate_f, n_threads)
+            except BaseException:
+                fut_r.exception()  # wait for the reverse mate; the forward error wins (as before)
+                raise
+            pass_r, s_r, e_r = fut_r.result()
             keep = (pass_f & pass_r).nonzero()[0]
             outseqs += len(keep)
             w_f.write(
@@ -465,8 +505,11 @@ rm_phix, rm_lowcomplex
             )
             first = False
     finally:
-        w_f.close()
-        w_r.close()
+        mates.shutdown(wait=True)
+        try:
+            w_f.close()
+        finally:
+            w_r.close()
     if verbose:
         pct = round(outseqs * 100 / inseqs, 1) if inseqs else 0.0
         logger.info(
@@ -580,12 +623,12 @@ def filter_and_trim(
     max_len : float, default=inf
         Remove reads longer than this (before trimming).
     min_len : int, default=20
-        Remove reads shorter than this (after trimming).
+        Remove reads shorter than this (after trimming). ``-inf``/``inf`` are accepted (as in R).
     max_n : int, default=0
-        Maximum number of non-A/C/G/T bases.
+        Maximum number of non-A/C/G/T bases (``inf``: no limit).
     min_q : int, default=0
         Remove reads with a quality <= ``min_q`` after truncation (only used when
-        ``min_q > trunc_q``, as in R).
+        ``min_q > trunc_q``, as in R). ``-inf``/``inf`` are accepted.
     max_ee : float, default=inf
         Maximum expected errors, ``sum(10**(-Q/10))``.
     rm_phix : bool, default=True
