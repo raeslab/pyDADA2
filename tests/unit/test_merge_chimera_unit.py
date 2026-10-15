@@ -128,3 +128,21 @@ def test_is_bimera_denovo_duplicates(caplog):
     with caplog.at_level(logging.INFO, logger="pydada2"):
         out = dada2.is_bimera_denovo(df)
     assert len(out) == 3
+
+
+def test_merge_pairs_batch_equals_per_sample_and_propagate_col_str():
+    # merge_pairs aligns all samples in one batch (identical pairs once); the result must equal
+    # per-sample calls, for any n_jobs. propagate_col accepts a single column name.
+    derep_fastq, merge_pairs = dada2.derep_fastq, dada2.merge_pairs
+    names = ["sam1", "sam2", "sam1"]  # a repeated sample: every pair occurs twice
+    df_ = [derep_fastq(example_path(f"{n}F.fastq.gz")) for n in names]
+    dr_ = [derep_fastq(example_path(f"{n}R.fastq.gz")) for n in names]
+    ddf = DADA(err=err_balanced_f()).fit(df_).results_
+    ddr = DADA(err=err_balanced_r()).fit(dr_).results_
+    batch = merge_pairs(ddf, df_, ddr, dr_, propagate_col="n0", return_rejects=True, n_jobs=3)
+    for i in range(len(names)):
+        one = merge_pairs(ddf[i], df_[i], ddr[i], dr_[i], propagate_col=["n0"], return_rejects=True)
+        pd.testing.assert_frame_equal(batch[i], one)
+        assert {"F.n0", "R.n0"} <= set(one.columns)
+        assert "F.n" not in one.columns
+    pd.testing.assert_frame_equal(batch[0], batch[2])

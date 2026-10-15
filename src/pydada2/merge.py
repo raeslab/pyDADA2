@@ -62,7 +62,7 @@ def merge_pairs(
     min_overlap: int = 12,
     max_mismatch: int = 0,
     return_rejects: bool = False,
-    propagate_col: Sequence[str] = (),
+    propagate_col: str | Sequence[str] = (),
     just_concatenate: bool = False,
     trim_overhang: bool = False,
     n_jobs: int | None = None,
@@ -87,15 +87,16 @@ def merge_pairs(
     return_rejects : bool, default=False
         Also return the pairs that could not be merged (with ``accept`` False and an empty
         sequence).
-    propagate_col : sequence of str, default=()
-        Columns of the DADA ``clusters`` frames to copy (as ``F.<col>`` and ``R.<col>``).
+    propagate_col : str or sequence of str, default=()
+        Column(s) of the DADA ``clusters`` frames to copy (as ``F.<col>`` and ``R.<col>``).
     just_concatenate : bool, default=False
         Concatenate the reads (forward + ``NNNNNNNNNN`` + reverse complement of reverse)
         instead of merging.
     trim_overhang : bool, default=False
         Trim overhanging ends of the merged sequences.
     n_jobs : int, optional
-        Threads for the alignments.
+        Threads for the alignments (all samples are aligned in one batch, and a (forward,
+        reverse) pair that occurs in several samples is aligned once).
     verbose : int, default=0
         Log a summary per sample when > 0.
 
@@ -118,40 +119,59 @@ def merge_pairs(
     if not (len(rf) == len(rr) == len(df_) == len(dr_)):
         raise ValueError("dada_f, derep_f, dada_r and derep_r must have the same length.")
     nt = effective_n_jobs(n_jobs)
+    cols = [propagate_col] if isinstance(propagate_col, str) else list(propagate_col)
+    pairs = [_unique_pairs(rf[i], df_[i], rr[i], dr_[i]) for i in range(len(rf))]
+    for i, p in enumerate(pairs):
+        if p is None and verbose:
+            logger.info(
+                "No paired-reads (in ZERO unique pairings) successfully merged out of %d "
+                "pairings) input.",
+                len(df_[i].map),
+            )
+    merged: list[dict[str, Any] | None] = [None] * len(pairs)
+    if not just_concatenate:
+        mm, gap = (-64, -64) if max_mismatch == 0 else (-8, -8)
+        todo = [(i, p) for i, p in enumerate(pairs) if p is not None]
+        fseq: list[str] = []
+        rseq: list[str] = []
+        prefer: list[int] = []
+        for i, (ups, f, r) in todo:
+            n0_f = rf[i].clusters["n0"].to_numpy()[ups["forward"].to_numpy()]
+            n0_r = rr[i].clusters["n0"].to_numpy()[ups["reverse"].to_numpy()]
+            fseq += f
+            rseq += r
+            prefer += (1 + (n0_r > n0_f).astype(np.int64)).tolist()
+        if fseq:  # one kernel call for all samples (identical pairs are aligned once)
+            res = _core.merge_pairs_core(fseq, rseq, prefer, 1, mm, gap, bool(trim_overhang), nt)
+            start = 0
+            for i, (ups, _, _) in todo:
+                n = len(ups)
+                merged[i] = {
+                    "nmatch": np.asarray(res["nmatch"][start : start + n], dtype=np.int64),
+                    "nmismatch": np.asarray(res["nmismatch"][start : start + n], dtype=np.int64),
+                    "nindel": np.asarray(res["nindel"][start : start + n], dtype=np.int64),
+                    "prefer": np.asarray(prefer[start : start + n], dtype=np.int64),
+                    "sequence": res["sequence"][start : start + n],
+                }
+                start += n
     out = [
-        _merge_one(
-            rf[i],
-            df_[i],
-            rr[i],
-            dr_[i],
-            min_overlap,
-            max_mismatch,
-            return_rejects,
-            propagate_col,
-            just_concatenate,
-            trim_overhang,
-            nt,
-            verbose,
+        _finish(
+            rf[i], rr[i], pairs[i], merged[i], min_overlap, max_mismatch, return_rejects, cols,
+            just_concatenate, verbose,
         )
         for i in range(len(rf))
-    ]
+    ]  # fmt: skip
     return out[0] if (single and len(out) == 1) else out
 
 
-def _merge_one(
-    dd_f: DadaResult,
-    drp_f: Dereplication,
-    dd_r: DadaResult,
-    drp_r: Dereplication,
-    min_overlap: int,
-    max_mismatch: int,
-    return_rejects: bool,
-    propagate_col: Sequence[str],
-    just_concatenate: bool,
-    trim_overhang: bool,
-    n_threads: int,
-    verbose: int,
-) -> pd.DataFrame:
+def _unique_pairs(
+    dd_f: DadaResult, drp_f: Dereplication, dd_r: DadaResult, drp_r: Dereplication
+) -> tuple[pd.DataFrame, list[str], list[str]] | None:
+    """Distinct (forward, reverse) ASV pairs of a sample (R: ``unique(data.frame)``).
+
+    Returns the pairs with their read counts, and the forward and reverse-complemented reverse
+    sequences of each pair; None when no read pair has both ASVs.
+    """
     map_f, map_r = drp_f.map, drp_r.map
     if not (
         len(map_f) == len(map_r)
@@ -165,19 +185,35 @@ def _merge_one(
     # unique (forward, reverse) pairs in order of first appearance (R: unique(data.frame))
     pairs = pd.DataFrame({"forward": r_f[valid], "reverse": r_r[valid]})
     if pairs.empty:
-        if verbose:
-            logger.info(
-                "No paired-reads (in ZERO unique pairings) successfully merged out of %d "
-                "pairings) input.",
-                len(r_f),
-            )
-        return pd.DataFrame({c: pd.Series(dtype=object) for c in _COLUMNS})
+        return None
     counts = pairs.value_counts(sort=False)
     ups = pairs.drop_duplicates().reset_index(drop=True)
+    ups["abundance"] = [
+        int(counts[(f, r)]) for f, r in zip(ups["forward"], ups["reverse"], strict=True)
+    ]
     fseq = dd_f.clusters["sequence"].to_numpy()[ups["forward"].to_numpy()].tolist()
     rseq = reverse_complement(
         dd_r.clusters["sequence"].to_numpy()[ups["reverse"].to_numpy()].tolist()
     )
+    return ups, fseq, rseq
+
+
+def _finish(
+    dd_f: DadaResult,
+    dd_r: DadaResult,
+    pairs: tuple[pd.DataFrame, list[str], list[str]] | None,
+    merged: dict[str, Any] | None,
+    min_overlap: int,
+    max_mismatch: int,
+    return_rejects: bool,
+    propagate_col: Sequence[str],
+    just_concatenate: bool,
+    verbose: int,
+) -> pd.DataFrame:
+    if pairs is None:
+        return pd.DataFrame({c: pd.Series(dtype=object) for c in _COLUMNS})
+    ups, fseq, rseq = pairs
+    ups = ups.copy()
     n = len(ups)
     if just_concatenate:
         ups["sequence"] = [f + "NNNNNNNNNN" + r for f, r in zip(fseq, rseq, strict=True)]
@@ -187,24 +223,15 @@ def _merge_one(
         ups["prefer"] = pd.array([pd.NA] * n, dtype="Int64")
         ups["accept"] = True
     else:
-        mm, gap = (-64, -64) if max_mismatch == 0 else (-8, -8)
-        n0_f = dd_f.clusters["n0"].to_numpy()[ups["forward"].to_numpy()]
-        n0_r = dd_r.clusters["n0"].to_numpy()[ups["reverse"].to_numpy()]
-        prefer = 1 + (n0_r > n0_f).astype(np.int64)
-        res = _core.merge_pairs_core(
-            fseq, rseq, prefer.tolist(), 1, mm, gap, bool(trim_overhang), n_threads
-        )
-        ups["nmatch"] = np.asarray(res["nmatch"], dtype=np.int64)
-        ups["nmismatch"] = np.asarray(res["nmismatch"], dtype=np.int64)
-        ups["nindel"] = np.asarray(res["nindel"], dtype=np.int64)
-        ups["prefer"] = prefer
+        assert merged is not None
+        ups["nmatch"] = merged["nmatch"]
+        ups["nmismatch"] = merged["nmismatch"]
+        ups["nindel"] = merged["nindel"]
+        ups["prefer"] = merged["prefer"]
         ups["accept"] = (ups["nmatch"] >= min_overlap) & (
             (ups["nmismatch"] + ups["nindel"]) <= max_mismatch
         )
-        ups["sequence"] = res["sequence"]
-    ups["abundance"] = [
-        int(counts[(f, r)]) for f, r in zip(ups["forward"], ups["reverse"], strict=True)
-    ]
+        ups["sequence"] = merged["sequence"]
     ups.loc[~ups["accept"], "sequence"] = ""
     cols = [c for c in propagate_col if c in dd_f.clusters.columns]
     for col in cols:
