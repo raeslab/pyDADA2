@@ -224,3 +224,45 @@ def test_seq_complexity_exact():
             got = dada2.seq_complexity(cx["seqs"], **kw)
         exp = np.array([np.nan if v is None else v for v in cx[key]], dtype=float)
         np.testing.assert_array_equal(got, exp, err_msg=key)
+
+
+def test_match_pattern_max_mismatch_ge_length():
+    """Biostrings reports every overlapping window when max.mismatch >= pattern length."""
+    d = load("match_pattern_degenerate")
+    for case in d["cases"]:
+        subject = scalar(case["subject"]) if case["subject"] else ""
+        pattern, k, fixed = (
+            scalar(case["pattern"]),
+            scalar(case["max_mismatch"]),
+            scalar(case["fixed"]),
+        )
+        for mode, indels in (("mismatch", False), ("indels", True)):
+            exp = [(s - 1, e) for s, e in zip(case[mode]["start"], case[mode]["end"], strict=True)]
+            got = [tuple(x) for x in core.match_pattern(subject, pattern, k, indels, fixed)]
+            assert got == exp, (subject, pattern, k, mode)
+            hits = core.match_primer([subject], pattern, k, indels, fixed)
+            assert int(hits["nhits"][0]) == len(exp)
+            if exp:
+                assert (int(hits["first_start"][0]), int(hits["first_end"][0])) == exp[0]
+                assert (int(hits["last_start"][0]), int(hits["last_end"][0])) == exp[-1]
+
+
+def test_remove_primers_max_mismatch_ge_length(tmp_path):
+    import hashlib
+
+    import pydada2 as dada2
+
+    fx = load("match_pattern_degenerate")["remove_primers"]
+    fout = tmp_path / "out.fastq"
+    df = dada2.remove_primers(
+        EXTDATA / "samPBprimers.fastq.gz", fout, primer_fwd="AGRG", primer_rev="GTCG",
+        max_mismatch=4, orient=False, compress=False,
+    )  # fmt: skip
+    assert df["reads_in"].tolist() == fx["reads_in"]
+    assert df["reads_out"].tolist() == fx["reads_out"]
+    with dnaio.open(fout) as fh:
+        recs = list(fh)
+    assert [r.name for r in recs] == fx["output"]["ids"]
+    assert [len(r.sequence) for r in recs] == fx["output"]["widths"]
+    txt = "".join(f"{r.name}\n{r.sequence}\n{r.qualities}\n" for r in recs)
+    assert hashlib.md5(txt.encode()).hexdigest() == scalar(fx["output"]["md5"])

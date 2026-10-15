@@ -728,4 +728,33 @@ wj(list(k2 = list(seqs = cx2, value = suppressWarnings(seqComplexity(cx2))),
         window = list(seqs = cxw, value = suppressWarnings(seqComplexity(cxw, window = 12, by = 3)))),
    "complexity_thresholds")
 
+log_msg("matchPattern with max.mismatch >= pattern length")
+# Biostrings then reports every window of the pattern's width that overlaps the subject.
+set.seed(20261017)
+rd <- function(n, a = c("A", "C", "G", "T")) paste(sample(a, n, replace = TRUE), collapse = "")
+mpd <- list()
+for (case in 1:300) {
+  m <- sample(1:8, 1)
+  pat <- rd(m, if (case %% 3 == 0) c("A", "C", "G", "T", "R", "Y", "N") else c("A", "C", "G", "T"))
+  subj <- rd(sample(0:14, 1))
+  k <- max(0, m + sample(-1:3, 1))
+  fixed <- !grepl("[^ACGT]", pat)
+  res <- list(subject = subj, pattern = pat, max_mismatch = k, fixed = fixed)
+  for (ind in c(FALSE, TRUE)) {
+    mm <- matchPattern(pat, DNAString(subj), max.mismatch = k, with.indels = ind, fixed = fixed)
+    res[[if (ind) "indels" else "mismatch"]] <- list(start = start(mm), end = end(mm))
+  }
+  mpd[[case]] <- res
+}
+fout <- file.path(TMP, "prim_mm_ge_len.fastq")
+rp <- suppressMessages(removePrimers(ext("samPBprimers.fastq.gz"), fout, primer.fwd = "AGRG",
+                                     primer.rev = "GTCG", max.mismatch = 4, orient = FALSE,
+                                     compress = FALSE))
+wj(list(cases = mpd,
+        remove_primers = list(params = list(primer.fwd = "AGRG", primer.rev = "GTCG", max.mismatch = 4L,
+                                            orient = FALSE),
+                              reads_in = unname(rp[, 1]), reads_out = unname(rp[, 2]),
+                              output = fq_digest(fout))),
+   "match_pattern_degenerate")
+
 log_msg("done")

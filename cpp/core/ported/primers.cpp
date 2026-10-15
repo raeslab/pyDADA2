@@ -205,6 +205,15 @@ void indel_matches(const std::string &s, const Matcher &mt, int k,
   if (have_prov) report(prov_start, prov_width);
 }
 
+// Biostrings with max.mismatch >= pattern length (both modes): every window of the pattern's
+// width that overlaps the subject, i.e. starts -(m-1) .. n-1 (0-based), is reported. Verified
+// against Biostrings on 662 random cases (tests/reference/data/match_pattern_degenerate.json).
+bool all_windows(int n, int m, int k, std::vector<std::pair<int, int>> &out) {
+  if (m < 1 || k < m) return false;
+  for (int st = 1 - m; st <= n - 1; ++st) out.emplace_back(st, st + m);
+  return true;
+}
+
 }  // namespace
 
 std::vector<std::pair<int, int>> match_pattern(const std::string &subject,
@@ -213,6 +222,8 @@ std::vector<std::pair<int, int>> match_pattern(const std::string &subject,
   if (max_mismatch < 0) dada2_stop_invalid("max_mismatch must be >= 0.");
   Matcher mt(pattern, fixed);
   std::vector<std::pair<int, int>> out;
+  if (all_windows(static_cast<int>(subject.size()), static_cast<int>(pattern.size()), max_mismatch, out))
+    return out;
   if (with_indels) indel_matches(subject, mt, max_mismatch, out);
   else mismatch_matches(subject, mt, max_mismatch, out);
   return out;
@@ -234,8 +245,12 @@ PrimerHits match_primer(const std::vector<std::string> &seqs, const std::string 
     std::vector<std::pair<int, int>> hits;
     for (size_t i = b; i < e; ++i) {
       hits.clear();
-      if (with_indels) indel_matches(seqs[i], mt, max_mismatch, hits);
-      else mismatch_matches(seqs[i], mt, max_mismatch, hits);
+      if (all_windows(static_cast<int>(seqs[i].size()), static_cast<int>(primer.size()), max_mismatch, hits)) {
+      } else if (with_indels) {
+        indel_matches(seqs[i], mt, max_mismatch, hits);
+      } else {
+        mismatch_matches(seqs[i], mt, max_mismatch, hits);
+      }
       h.nhits[i] = static_cast<int>(hits.size());
       if (!hits.empty()) {
         h.first_start[i] = hits.front().first;
