@@ -135,7 +135,7 @@ NB_MODULE(_core, m) {
 
   m.def(
       "_parallel_selftest",
-      [](size_t n, size_t grain, int n_threads, long long fail_at) {
+      [](size_t n, size_t grain, int n_threads, long long fail_at, size_t nested) {
         std::vector<int64_t> out(n, 0);
         std::atomic<int> calls{0};
         {
@@ -147,15 +147,26 @@ NB_MODULE(_core, m) {
                 for (size_t i = b; i < e; ++i) {
                   if (fail_at >= 0 && static_cast<long long>(i) == fail_at)
                     throw dada2::Error("parallel failure at " + std::to_string(i));
-                  out[i] = static_cast<int64_t>(i) * static_cast<int64_t>(i);
+                  int64_t v = static_cast<int64_t>(i) * static_cast<int64_t>(i);
+                  if (nested > 0) {  // inner parallel region adding `nested` zeros
+                    std::vector<int64_t> part(nested, 0);
+                    dada2::parallel_for(
+                        0, nested, [&](size_t ib, size_t ie) {
+                          for (size_t k = ib; k < ie; ++k) part[k] = 0;
+                        },
+                        1, n_threads);
+                    for (int64_t x : part) v += x;
+                  }
+                  out[i] = v;
                 }
               },
               grain, n_threads);
         }
         return std::make_pair(to_numpy(std::move(out)), calls.load());
       },
-      "n"_a, "grain"_a, "n_threads"_a, "fail_at"_a = -1,
-      "Test helper: squares 0..n-1 with parallel_for; returns (values, number of chunks).");
+      "n"_a, "grain"_a, "n_threads"_a, "fail_at"_a = -1, "nested"_a = 0,
+      "Test helper: squares 0..n-1 with parallel_for (optionally running a nested parallel_for\n"
+      "of `nested` items per index); returns (values, number of chunks).");
 
   m.def(
       "_interrupt_selftest",

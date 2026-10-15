@@ -151,3 +151,28 @@ def test_scoped_handlers_restore_previous():
     core.dada_uniques(*args)
     core.dada_uniques(*args, verbose=True, log=msgs.append)
     assert len(msgs) == 2 * n
+
+
+@pytest.mark.parametrize("n_threads", [2, 8])
+def test_parallel_for_nested_regions(n_threads):
+    vals, chunks = core._parallel_selftest(200, 3, n_threads, -1, 17)
+    np.testing.assert_array_equal(vals, np.arange(200, dtype=np.int64) ** 2)
+    assert chunks == -(-200 // 3)
+
+
+def test_parallel_for_concurrent_callers_share_the_pool():
+    from concurrent.futures import ThreadPoolExecutor
+
+    def run(k):
+        return core._parallel_selftest(5000 + k, 7, 4, -1, 3 if k % 2 else 0)
+
+    with ThreadPoolExecutor(8) as ex:
+        outs = list(ex.map(run, range(24)))
+    for k, (vals, _) in enumerate(outs):
+        np.testing.assert_array_equal(vals, np.arange(5000 + k, dtype=np.int64) ** 2)
+
+
+def test_parallel_for_huge_thread_request_is_capped():
+    vals, chunks = core._parallel_selftest(100, 1, 100_000)
+    np.testing.assert_array_equal(vals, np.arange(100, dtype=np.int64) ** 2)
+    assert chunks == 100
