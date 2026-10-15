@@ -2,6 +2,12 @@
 // Ported from DADA2 R/filter.R::seqComplexity and ::sindex (with Biostrings
 // oligonucleotideFrequency semantics) (https://github.com/benjjneb/dada2, commit b61fe2e, v1.36.0).
 // Copyright (C) Benjamin Callahan et al. Licensed under the LGPL (see LICENSE).
+//
+// The entropy terms are summed like R's sum(), which accumulates doubles in a long double
+// (LDOUBLE) and rounds the total to double once: with plain double accumulation a uniform
+// spectrum such as NGAGTACCNN (6 distinct 2-mers) gives 5.999999999999998 instead of R's 6, which
+// flips rm_lowcomplex thresholds. MSVC has no extended long double, so there a double-double
+// (TwoSum) accumulator stands in for R's 80-bit sum (R on Windows is built with mingw-w64).
 
 #include <cmath>
 
@@ -22,6 +28,26 @@ inline int nt_index(char c) {
     default: return -1;
   }
 }
+
+// Accumulator reproducing R's sum() of doubles (long double accumulation, rounded once).
+#if defined(_MSC_VER)
+struct ExtendedSum {  // long double == double on MSVC: double-double (TwoSum) instead
+  double hi = 0.0, lo = 0.0;
+  void add(double x) {
+    const double s = hi + x;
+    const double bp = s - hi;
+    lo += (hi - (s - bp)) + (x - bp);
+    hi = s;
+  }
+  double value() const { return hi + lo; }
+};
+#else
+struct ExtendedSum {
+  long double acc = 0.0L;
+  void add(double x) { acc += x; }
+  double value() const { return static_cast<double>(acc); }
+};
+#endif
 
 // exp(Shannon entropy) of the k-mer counts of s[lo, hi); k-mers with non-ACGT letters are not
 // counted (oligonucleotideFrequency). Summation follows R: k-mers in lexicographic order.
@@ -47,14 +73,14 @@ double sindex(const std::string &s, size_t lo, size_t hi, int k, std::vector<dou
     }
   }
   if (total == 0.0) return std::nan("");  // R: 0/0 -> NaN -> NA
-  double acc = 0.0;
+  ExtendedSum acc;
   for (double c : counts) {
     if (c > 0) {
       const double y = c / total;
-      acc += -y * std::log(y);
+      acc.add(-y * std::log(y));
     }
   }
-  return std::exp(acc);
+  return std::exp(acc.value());
 }
 
 }  // namespace

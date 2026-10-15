@@ -128,12 +128,38 @@ def test_match_ref():
     assert core.match_ref(d["seqs"], phix, 16, False) == d["match_ref_overlap"]
 
 
+# One unit in the last place of a subnormal double (2**-1074).
+SUBNORMAL_ULP = 5e-324
+
+
+def _check_ppois(ns, lams, ps):
+    """ppois_upper vs R's ppois(lower.tail=FALSE).
+
+    * zero and non-zero results must agree exactly (R keeps subnormal tails);
+    * p >= 1e-292: relative difference <= 1e-12;
+    * p < 1e-292: R recomputes these as exp(log p) and is itself off by up to 1.9e-12 from a
+      45-digit reference there (pydada2: <= 6e-13), so <= 2.5e-12 relative; subnormal results
+      carry fewer bits, so at least one subnormal ulp is allowed.
+    """
+    for n, lam, p in zip(ns, lams, ps, strict=True):
+        got = core.ppois_upper(int(n), lam)
+        assert (got == 0.0) == (p == 0.0), (n, lam, got, p)
+        tol = 1e-12 * p if p >= 1e-292 else max(2.5e-12 * p, SUBNORMAL_ULP)
+        assert abs(got - p) <= tol, (n, lam, got, p)
+
+
 def test_ppois_upper():
     d = load("ppois")
-    for n, lam, p in zip(d["n"], d["lambda"], d["p_upper"], strict=True):
-        got = core.ppois_upper(int(n), lam)
-        # rel 1e-12; subnormal results (< ~1e-305) only carry a few significant digits
-        assert got == pytest.approx(p, rel=1e-12, abs=1e-305), (n, lam)
+    _check_ppois(d["n"], d["lambda"], d["p_upper"])
+
+
+def test_ppois_upper_extended():
+    """Large counts (n up to 2e6, lambda/n in [0.5, 1.5]), small counts, lambda down to 1e-320
+    and a dense grid around the underflow boundary (REVIEW.md 1.1/1.2)."""
+    d = load("ppois_extended")
+    assert sum(p == 0 for p in d["p_upper"]) > 500  # exact zeros near the boundary
+    assert sum(0 < p < 2.2250738585072014e-308 for p in d["p_upper"]) > 1000  # subnormals
+    _check_ppois(d["n"], d["lambda"], d["p_upper"])
 
 
 def test_ppois_upper_edges():
@@ -175,3 +201,134 @@ def test_input_validation():
         core.kmer_dist(["ACGTACGT"], [], 5)
     with pytest.raises(ValueError, match="equal length"):
         core.nwvec(["ACGT"], [], 5, -4, -8, -1, True)
+
+
+def test_seq_complexity_exact():
+    """seqComplexity sums like R's long-double sum(): uniform k-mer spectra give exact integers
+    (NGAGTACCNN -> 6, not 5.999999999999998), so rm_lowcomplex thresholds match R exactly."""
+    import pydada2 as dada2
+
+    d = load("complexity_thresholds")
+    assert d["k2"]["seqs"][0] == "NGAGTACCNN" and d["k2"]["value"][0] == 6.0
+    with pytest.warns(UserWarning):
+        got = dada2.seq_complexity(d["k2"]["seqs"])
+    np.testing.assert_array_equal(got, d["k2"]["value"])
+    with pytest.warns(UserWarning):
+        got = dada2.seq_complexity(d["k3"]["seqs"], kmer_size=3)
+    np.testing.assert_array_equal(got, d["k3"]["value"])
+    got = dada2.seq_complexity(d["window"]["seqs"], window=12, by=3)
+    np.testing.assert_array_equal(got, d["window"]["value"])
+    cx = load("sequences")["complexity"]
+    for key, kw in (("k2", {}), ("k3", {"kmer_size": 3}), ("win50", {"window": 50, "by": 5})):
+        with pytest.warns(UserWarning):
+            got = dada2.seq_complexity(cx["seqs"], **kw)
+        exp = np.array([np.nan if v is None else v for v in cx[key]], dtype=float)
+        np.testing.assert_array_equal(got, exp, err_msg=key)
+
+
+def test_match_pattern_max_mismatch_ge_length():
+    """Biostrings reports every overlapping window when max.mismatch >= pattern length."""
+    d = load("match_pattern_degenerate")
+    for case in d["cases"]:
+        subject = scalar(case["subject"]) if case["subject"] else ""
+        pattern, k, fixed = (
+            scalar(case["pattern"]),
+            scalar(case["max_mismatch"]),
+            scalar(case["fixed"]),
+        )
+        for mode, indels in (("mismatch", False), ("indels", True)):
+            exp = [(s - 1, e) for s, e in zip(case[mode]["start"], case[mode]["end"], strict=True)]
+            got = [tuple(x) for x in core.match_pattern(subject, pattern, k, indels, fixed)]
+            assert got == exp, (subject, pattern, k, mode)
+            hits = core.match_primer([subject], pattern, k, indels, fixed)
+            assert int(hits["nhits"][0]) == len(exp)
+            if exp:
+                assert (int(hits["first_start"][0]), int(hits["first_end"][0])) == exp[0]
+                assert (int(hits["last_start"][0]), int(hits["last_end"][0])) == exp[-1]
+
+
+def test_remove_primers_max_mismatch_ge_length(tmp_path):
+    import hashlib
+
+    import pydada2 as dada2
+
+    fx = load("match_pattern_degenerate")["remove_primers"]
+    fout = tmp_path / "out.fastq"
+    df = dada2.remove_primers(
+        EXTDATA / "samPBprimers.fastq.gz", fout, primer_fwd="AGRG", primer_rev="GTCG",
+        max_mismatch=4, orient=False, compress=False,
+    )  # fmt: skip
+    assert df["reads_in"].tolist() == fx["reads_in"]
+    assert df["reads_out"].tolist() == fx["reads_out"]
+    with dnaio.open(fout) as fh:
+        recs = list(fh)
+    assert [r.name for r in recs] == fx["output"]["ids"]
+    assert [len(r.sequence) for r in recs] == fx["output"]["widths"]
+    txt = "".join(f"{r.name}\n{r.sequence}\n{r.qualities}\n" for r in recs)
+    assert hashlib.md5(txt.encode()).hexdigest() == scalar(fx["output"]["md5"])
+
+
+def test_kmer_size_and_acgt_validation():
+    s1, s2 = ["ACGTACGTAC"], ["ACGTACGTAA"]
+    for k in (2, 9, 15, 16, -1):
+        with pytest.raises(ValueError, match="kmer-size"):
+            core.kmer_dist(s1, s2, k)
+        with pytest.raises(ValueError, match="kmer-size"):
+            core.kdist_matches(s1, s2, k)
+    for k in (0, 9):
+        with pytest.raises(ValueError, match="kmer-size"):
+            core.kmer_matches(s1, s2, k)
+        with pytest.raises(ValueError, match="kmer-size"):
+            core.kord_dist(s1, s2, k, 0)
+    with pytest.raises(ValueError, match="A/C/G/T"):
+        core.nwalign("ACNT", "ACGT", MATCH, MISMATCH, GAP, GAP, -1, True)
+    # the vectorized aligner only compares letters; R accepts any letters there
+    assert core.nwvec(["ACNNGT"], ["ACGGT"], MATCH, MISMATCH, GAP, -1, True) == [
+        ("ACNNGT", "ACG-GT")
+    ]
+
+
+def test_kord_dist_sse_paths():
+    # SSE=1 uses the minimum length (kord_dist_SSEi, emulated exactly off x86); SSE=0 returns -1
+    # for unequal lengths. The result must not depend on the platform.
+    assert core.kord_dist(["ACGTACGTAC"], ["ACGTACGTAAGG"], 5, 0) == [-1.0]
+    assert core.kord_dist(["ACGTACGTAC"], ["ACGTACGTAAGG"], 5, 1) == [pytest.approx(1 / 6)]
+
+
+def test_int32_matrices_reject_out_of_range():
+    seqs = ["ACGTACGTACGTAAAACCCCGGGGTTTT", "ACGTACGTACGTAAAACCCCGGGGTTTA"]
+    args = (seqs, 1.5, 2, False, 4, MATCH, MISMATCH, GAP, 16)
+    ref = core.table_bimera(np.array([[100, 3]], dtype=np.int32), *args)
+    for mat in (
+        np.array([[100, 3]], dtype=np.int64),
+        np.asfortranarray([[100, 3]], dtype=np.int32),
+    ):
+        got = core.table_bimera(mat, *args)
+        assert got[0].tolist() == ref[0].tolist() and got[1].tolist() == ref[1].tolist()
+    for bad in (np.array([[2**32 + 5, 3]], dtype=np.int64), np.array([[1e12, 3.0]])):
+        with pytest.raises(ValueError, match="int32 range"):
+            core.table_bimera(bad, *args)
+    q = np.array([[30, 20, core.NA_QUAL]], dtype=np.int64)
+    np.testing.assert_array_equal(core.matrix_ee(q), core.matrix_ee(q.astype(np.int32)))
+    with pytest.raises(ValueError, match="int32 range"):
+        core.matrix_ee(np.array([[30, 2**33]], dtype=np.int64))
+
+
+def test_dereplicator_concurrent_add_chunk():
+    import threading
+
+    d = core.Dereplicator()
+    seqs, quals = ["ACGT" * 30, "ACGA" * 30] * 50, ["I" * 120] * 100
+
+    def work():
+        for _ in range(100):
+            d.add_chunk(seqs, quals, 33)
+
+    threads = [threading.Thread(target=work) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    res = d.finish()
+    assert res["abundance"].tolist() == [30000, 30000]
+    assert len(res["map"]) == 60000

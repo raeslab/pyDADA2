@@ -81,6 +81,8 @@ def _compare(res, fx, case):
     bs = fx["birth_subs"]
     np.testing.assert_array_equal(res.birth_subs["pos"], np.array(bs["pos"], int) - 1)
     assert res.birth_subs["ref"].tolist() == bs["ref"]
+    assert res.birth_subs["sub"].tolist() == bs["sub"]
+    assert_close_r(res.birth_subs["qual"], bs["qual"], err_msg="birth_subs qual")
     np.testing.assert_array_equal(res.birth_subs["clust"], np.array(bs["clust"], int) - 1)
     np.testing.assert_array_equal(res.trans, matrix(fx["trans"], dtype=np.int64))
     np.testing.assert_allclose(res.quality, matrix(fx["quality"]), rtol=1e-12)
@@ -93,30 +95,6 @@ def _compare(res, fx, case):
         np.testing.assert_allclose(res.err_in, matrix(fx["err_in"]), rtol=1e-10)
 
 
-def _compare_unordered(res, fx):
-    """Cluster-order-independent comparison (DEVIATIONS.md #4: self-consistent mode)."""
-    cl = fx["clustering"]
-    r_seqs = cl["sequence"]
-    c = res.clusters.set_index("sequence")
-    assert sorted(c.index) == sorted(r_seqs)
-    for k, sq in enumerate(r_seqs):
-        for col in ("abundance", "n0", "n1", "nunq", "birth_ham"):
-            exp = -1 if cl[col][k] is None else cl[col][k]
-            assert c.loc[sq, col] == exp, (col, k)
-    # same cluster membership of every unique sequence
-    r_map = r_index(fx["map"])
-    got = [res.clusters["sequence"].iloc[m] if m >= 0 else None for m in res.map]
-    exp = [r_seqs[m] if m >= 0 else None for m in r_map]
-    assert got == exp
-    np.testing.assert_array_equal(res.trans, matrix(fx["trans"], dtype=np.int64))
-    np.testing.assert_allclose(res.err_out, matrix(fx["err_out"]), rtol=1e-10)
-    for a, b in zip(res.err_in, fx["err_in"], strict=True):
-        np.testing.assert_allclose(a, matrix(b), rtol=1e-10)
-
-
-UNORDERED = {"self_consist"}
-
-
 @pytest.mark.parametrize("case", sorted(CASES))
 def test_dada_parity(case, dereps):
     key, err, kwargs = CASES[case]
@@ -127,10 +105,7 @@ def test_dada_parity(case, dereps):
     fxs = _fx_samples(case)
     assert len(dd.results_) == len(fxs)
     for res, fx in zip(dd.results_, fxs, strict=True):
-        if case in UNORDERED:
-            _compare_unordered(res, fx)
-        else:
-            _compare(res, fx, case)
+        _compare(res, fx, case)
 
 
 def _check_learned(le, fx):

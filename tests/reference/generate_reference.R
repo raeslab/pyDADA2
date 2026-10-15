@@ -665,4 +665,96 @@ rownames(track) <- c("sam1", "sam2")
 wj(list(track = mat_list(track), seqtab_nochim = mat_list(seqtab.nochim),
         taxa = df_list(as.data.frame(unname(taxa50)))), "e2e")
 
+# ================================================= numerics (REVIEW.md fixes) ===
+# Self-contained section with its own seeds, so it does not disturb the fixtures above.
+
+log_msg("ppois extended grid")
+# Poisson upper tail P(X > n): large counts (lambda/n in [0.5, 1.5] and around the mode), small
+# counts, tiny lambda, and a dense grid around the underflow boundary (lambda solved so that
+# log P hits a target): values in R's log-space band (< 1e-292), subnormals and exact zeros.
+set.seed(20261015)
+pp <- list()
+for (n in c(1e3, 2e3, 5e3, 1e4, 3e4, 1e5, 3e5, 1e6, 2e6)) {
+  f <- c(seq(0.5, 1.5, length.out = 41), 1 + c(-8, -5, -3, -2, -1, -0.5, 0.5, 1, 2, 3, 5, 8) / sqrt(n))
+  pp[[length(pp) + 1]] <- data.frame(n = n, lambda = n * f, grp = "large")
+}
+for (n in c(0:30, 40, 50, 75, 100, 200, 500)) {
+  f <- c(0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99, 1, 1.01, 1.1, 1.5, 2, 5)
+  pp[[length(pp) + 1]] <- data.frame(n = n, lambda = (n + 1) * f, grp = "small")
+}
+pp[[length(pp) + 1]] <- data.frame(n = rep(0:10, each = 33), lambda = rep(10^seq(-320, 0, by = 10), 11),
+                                   grp = "tiny")
+solve_lambda <- function(n, target) {
+  f <- function(l) ppois(n, exp(l), lower.tail = FALSE, log.p = TRUE) - target
+  lo <- -800; hi <- log(n + 1)
+  if (f(lo) > 0 || f(hi) < 0) return(NA_real_)
+  exp(uniroot(f, c(lo, hi), tol = 1e-13)$root)
+}
+nb <- 1500
+nn <- c(round(10^runif(nb, 0, log10(2e6))), sample(0:30, nb, replace = TRUE))
+tg <- c(runif(nb / 2, -746, -742.5), runif(nb / 2, -760, -680), runif(nb / 2, -746, -742.5),
+        runif(nb / 2, -760, -680))
+lam <- mapply(solve_lambda, nn, tg)
+pp[[length(pp) + 1]] <- data.frame(n = nn, lambda = lam, grp = "underflow")[is.finite(lam), ]
+pp <- do.call(rbind, pp)
+pp$p_upper <- ppois(pp$n, pp$lambda, lower.tail = FALSE)
+wj(df_list(pp), "ppois_extended")
+
+log_msg("seqComplexity thresholds")
+# Uniform k-mer spectra: exp(entropy) is an integer in exact arithmetic, so the long-double
+# accumulation of R's sum() decides the last bit (e.g. NGAGTACCNN -> exactly 6).
+set.seed(20261016)
+uniform_walk <- function(k, len) {
+  x <- sample(c("A", "C", "G", "T"), k - 1, replace = TRUE)
+  used <- character(0)
+  repeat {
+    if (length(x) >= len) break
+    nxt <- sample(c("A", "C", "G", "T"))
+    ok <- FALSE
+    for (b in nxt) {
+      km <- paste0(c(tail(x, k - 1), b), collapse = "")
+      if (!(km %in% used)) { used <- c(used, km); x <- c(x, b); ok <- TRUE; break }
+    }
+    if (!ok) break
+  }
+  paste(x, collapse = "")
+}
+pad <- function(s) paste0(strrep("N", sample(0:2, 1)), s, strrep("N", sample(0:2, 1)))
+cx2 <- c("NGAGTACCNN", vapply(1:300, function(i) pad(uniform_walk(2, sample(3:17, 1))), ""))
+cx3 <- vapply(1:200, function(i) pad(uniform_walk(3, sample(4:40, 1))), "")
+cxw <- vapply(1:60, function(i) paste0(uniform_walk(2, 17), uniform_walk(2, 17), uniform_walk(2, 17)), "")
+wj(list(k2 = list(seqs = cx2, value = suppressWarnings(seqComplexity(cx2))),
+        k3 = list(seqs = cx3, value = suppressWarnings(seqComplexity(cx3, kmerSize = 3))),
+        window = list(seqs = cxw, value = suppressWarnings(seqComplexity(cxw, window = 12, by = 3)))),
+   "complexity_thresholds")
+
+log_msg("matchPattern with max.mismatch >= pattern length")
+# Biostrings then reports every window of the pattern's width that overlaps the subject.
+set.seed(20261017)
+rd <- function(n, a = c("A", "C", "G", "T")) paste(sample(a, n, replace = TRUE), collapse = "")
+mpd <- list()
+for (case in 1:300) {
+  m <- sample(1:8, 1)
+  pat <- rd(m, if (case %% 3 == 0) c("A", "C", "G", "T", "R", "Y", "N") else c("A", "C", "G", "T"))
+  subj <- rd(sample(0:14, 1))
+  k <- max(0, m + sample(-1:3, 1))
+  fixed <- !grepl("[^ACGT]", pat)
+  res <- list(subject = subj, pattern = pat, max_mismatch = k, fixed = fixed)
+  for (ind in c(FALSE, TRUE)) {
+    mm <- matchPattern(pat, DNAString(subj), max.mismatch = k, with.indels = ind, fixed = fixed)
+    res[[if (ind) "indels" else "mismatch"]] <- list(start = start(mm), end = end(mm))
+  }
+  mpd[[case]] <- res
+}
+fout <- file.path(TMP, "prim_mm_ge_len.fastq")
+rp <- suppressMessages(removePrimers(ext("samPBprimers.fastq.gz"), fout, primer.fwd = "AGRG",
+                                     primer.rev = "GTCG", max.mismatch = 4, orient = FALSE,
+                                     compress = FALSE))
+wj(list(cases = mpd,
+        remove_primers = list(params = list(primer.fwd = "AGRG", primer.rev = "GTCG", max.mismatch = 4L,
+                                            orient = FALSE),
+                              reads_in = unname(rp[, 1]), reads_out = unname(rp[, 2]),
+                              output = fq_digest(fout))),
+   "match_pattern_degenerate")
+
 log_msg("done")
