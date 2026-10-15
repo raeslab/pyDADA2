@@ -5,6 +5,7 @@
 //  * C_is_bimera -> dada2::is_bimera; BimeraTableParallel/C_table_bimera2 -> dada2::table_bimera
 //    using dada2::parallel_for with a ROW-major (samples x sequences) table.
 //  * Alignments are freed on every path (upstream leaked on the `continue` path of is_bimera).
+//  * is_bimera_ptr: is_bimera on parents given by pointer (no copies of the parent strings).
 #include <algorithm>
 
 #include "api.h"
@@ -22,6 +23,13 @@ namespace dada2 {
 // @param max_shift A \code{integer(1)} of the maximum alignment shift allowed.
 bool is_bimera(const std::string &sq, const std::vector<std::string> &pars, bool allow_one_off,
                int min_one_off_par_dist, int match, int mismatch, int gap_p, int max_shift) {
+  std::vector<const std::string *> ptrs(pars.size());
+  for(size_t i=0;i<pars.size();i++) { ptrs[i] = &pars[i]; }
+  return is_bimera_ptr(sq, ptrs, allow_one_off, min_one_off_par_dist, match, mismatch, gap_p, max_shift);
+}
+
+bool is_bimera_ptr(const std::string &sq, const std::vector<const std::string *> &pars, bool allow_one_off,
+                   int min_one_off_par_dist, int match, int mismatch, int gap_p, int max_shift) {
   int left, right, left_oo, right_oo;
   char **al;
   int max_left=0, max_right=0;
@@ -30,7 +38,7 @@ bool is_bimera(const std::string &sq, const std::vector<std::string> &pars, bool
   const int sqlen = sq.size();
 
   for(size_t i=0;i<pars.size() && rval==false;i++) {
-    al = nwalign_vectorized2(sq.c_str(), sq.length(), pars[i].c_str(), pars[i].length(), (int16_t) match, (int16_t) mismatch, (int16_t) gap_p, 0, max_shift);  // Remember, alignments must be freed!
+    al = nwalign_vectorized2(sq.c_str(), sq.length(), pars[i]->c_str(), pars[i]->length(), (int16_t) match, (int16_t) mismatch, (int16_t) gap_p, 0, max_shift);  // Remember, alignments must be freed!
     get_lr(al, left, right, left_oo, right_oo, allow_one_off, max_shift);
 
     if((left+right) >= sqlen) { // Toss id/pure-shift/internal-indel "parents"

@@ -153,6 +153,10 @@ std::vector<double> matrix_ee(const int32_t *quals, int nrow, int ncol);
 // ------------------------------------------------------------------ chimera.cpp ---
 bool is_bimera(const std::string &sq, const std::vector<std::string> &pars, bool allow_one_off,
                int min_one_off_par_dist, int match, int mismatch, int gap_p, int max_shift);
+// is_bimera with the parents given by pointer.
+bool is_bimera_ptr(const std::string &sq, const std::vector<const std::string *> &pars,
+                   bool allow_one_off, int min_one_off_par_dist, int match, int mismatch,
+                   int gap_p, int max_shift);
 // mat: nsample x nseq row-major abundance table. Returns (nflag, nsam) per sequence.
 std::pair<std::vector<int>, std::vector<int>> table_bimera(
     const int32_t *mat, int nrow, int ncol, const std::vector<std::string> &seqs, double min_fold,
