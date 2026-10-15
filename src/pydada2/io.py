@@ -130,7 +130,8 @@ def read_fastq_chunks(
             if rec.qualities is None:  # pragma: no cover - dnaio yields FASTA without qualities
                 raise ValueError(f"{path}: not a FASTQ file.")
             ids.append(rec.name)
-            seqs.append(rec.sequence.upper())
+            sq = rec.sequence
+            seqs.append(sq if sq.isupper() else sq.upper())  # no copy when already upper
             quals.append(rec.qualities)
             if len(seqs) == n:
                 yield FastqChunk(ids, seqs, quals, quality_offset(quals, quality_type))
@@ -201,7 +202,7 @@ def read_fasta(path: PathLike, *, raw_ids: bool = False) -> list[tuple[str, str]
         ``(id, sequence)`` pairs; sequences are upper-cased.
     """
     with dnaio.open(os.fspath(path), mode="r") as reader:
-        records = [(rec.name, rec.sequence.upper()) for rec in reader]
+        records = [(rec.name, s if (s := rec.sequence).isupper() else s.upper()) for rec in reader]
     if raw_ids and records:
         headers = _raw_fasta_headers(path)
         if headers is not None and len(headers) == len(records):

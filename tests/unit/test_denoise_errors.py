@@ -195,3 +195,13 @@ def test_error_learner_randomize_and_derep_input(caplog):
         ErrorLearner().fit([])
     le2 = ErrorLearner(params=DadaParams(), n_bases=1).fit(drps[0])
     assert le2.n_iter_ >= 2
+
+
+def test_empty_dereplication_raises_clear_error():
+    empty = dada2.Dereplication(
+        uniques=pd.Series([], dtype=np.int64, index=pd.Index([], dtype=object)),
+        quals=np.zeros((0, 0)),
+        map=np.zeros(0, dtype=np.int64),
+    )
+    with pytest.raises(ValueError, match="Sample 0 has zero input sequences"):
+        DADA(err=err_balanced_f()).fit(empty)

@@ -274,6 +274,8 @@ def _as_dereps(X: Any) -> tuple[list[Dereplication], list[str] | None]:
 
 def _validate_derep(d: Dereplication, i: int, use_quals: bool) -> int:
     seqs = d.sequences
+    if not seqs:  # R fails here with "subscript out of bounds"
+        raise ValueError(f"Sample {i} has zero input sequences.")
     if not all(_core.is_acgt(seqs)):
         raise ValueError(
             "Invalid Dereplication uniques. Sequences must be made up only of A/C/G/T."
@@ -357,8 +359,10 @@ class DADA(BaseEstimator):
         Alternate sample inference and error-rate estimation until convergence.
     pool : {False, True, "pseudo"}, default=False
         Process samples independently, pooled, or pseudo-pooled.
-    priors : sequence of str, default=()
-        Sequences with prior evidence of existence (tested against ``omega_p``).
+    priors : str, path, sequence of str or object, default=()
+        Sequences with prior evidence of existence (tested against ``omega_p``): anything
+        :func:`~pydada2.get_sequences` accepts (a sequence, a FASTA/FASTQ path, a list of
+        sequences, a Dereplication or a DADA result), as R's ``getSequences(priors)``.
     params : DadaParams or dict, optional
         Algorithm parameters (a dict updates the defaults).
     n_jobs : int, optional
@@ -401,7 +405,7 @@ class DADA(BaseEstimator):
         error_model: ErrorModel | None = None,
         self_consistent: bool = False,
         pool: bool | str = False,
-        priors: Sequence[str] = (),
+        priors: Any = (),
         params: DadaParams | Mapping[str, Any] | None = None,
         n_jobs: int | None = None,
         verbose: int = 0,
