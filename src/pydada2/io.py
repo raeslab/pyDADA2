@@ -187,6 +187,9 @@ def list_fastq(
     return sorted(p for p in d.iterdir() if p.is_file() and any(r.search(p.name) for r in regs))
 
 
+_THREADED_READ_BYTES = 4 << 20  # compressed size from which xopen decompresses in a thread
+
+
 @contextlib.contextmanager
 def gc_paused() -> Iterator[None]:
     """Pause the cyclic garbage collector while building many acyclic objects.
@@ -228,7 +231,7 @@ def read_fasta(path: PathLike, *, raw_ids: bool = False) -> list[tuple[str, str]
 
 def _starts_with_fasta_header(path: PathLike) -> bool:
     """Tell whether the content is FASTA (first non-blank character ">") or empty."""
-    with xopen(os.fspath(path), "rb") as fh:
+    with xopen(os.fspath(path), "rb", threads=0) as fh:
         head = fh.read(1024).lstrip()
     return not head or head[:1] == b">"
 
@@ -245,7 +248,12 @@ def _read_fasta_lines(path: PathLike, raw_ids: bool) -> list[tuple[str, str]]:
     name: str | None = None
     seq: list[str] = []
     ascii_ok = True
-    with xopen(os.fspath(path), "rb") as fb, io.TextIOWrapper(fb) as fh:
+    # Threaded decompression pays off for big files only (thread start-up costs ~5 ms per open).
+    try:
+        threads = None if os.path.getsize(path) >= _THREADED_READ_BYTES else 0
+    except OSError:
+        threads = 0
+    with xopen(os.fspath(path), "rb", threads=threads) as fb, io.TextIOWrapper(fb) as fh:
         for line in fh:
             s = line.strip()
             if not s:
