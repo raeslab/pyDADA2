@@ -85,6 +85,88 @@ Sequence tables are `pandas.DataFrame`s (samples × ASVs, int64). Indices are 0-
 means NA in integer arrays. Estimators follow scikit-learn conventions: parameters go in
 `__init__`, `fit` returns `self`, learned state ends in `_`, and they work with `sklearn.base.clone`.
 
+## Command-line interface
+
+The `pydada2` command (also `python -m pydada2`) runs the paired-end workflow as five separate
+steps, so that a workflow manager such as Nextflow can run the per-sample steps in parallel and
+cache every step. It gives the same results as the Python API above.
+
+```bash
+# 1. per sample: filter and trim a read pair
+pydada2 trim-and-filter --in-fwd raw/sam1_R1.fastq.gz --in-rev raw/sam1_R2.fastq.gz \
+  --out-fwd filtered/sam1_F.fq.gz --out-rev filtered/sam1_R.fq.gz \
+  --trunc-len 240 160 --max-ee 2 --trunc-q 2 --stats stats/sam1.filter.tsv
+
+# 2. once per sequencing run: learn the error rates of both mates
+pydada2 learn-errors --in-fwd filtered/*_F.fq.gz --in-rev filtered/*_R.fq.gz \
+  --out errors.pkl --plot errors.pdf --threads 8
+
+# 3. per sample: dereplicate and denoise both mates (no merging yet)
+pydada2 infer-asv --in-fwd filtered/sam1_F.fq.gz --in-rev filtered/sam1_R.fq.gz \
+  --errors errors.pkl --out-fwd asv/sam1_F.dada.json.gz --out-rev asv/sam1_R.dada.json.gz
+
+# 4. all samples: merge the mates, build the sequence table, remove chimeras
+pydada2 merge --in-fwd asv/*_F.dada.json.gz --in-rev asv/*_R.dada.json.gz \
+  --out-seqtab seqtab.tsv --out-seqtab-nochim seqtab_nochim.tsv --out-fasta asvs.fa --threads 8
+
+# 5. once: assign taxonomy (DADA2-formatted reference files, e.g. SILVA)
+pydada2 assign-taxonomy --in seqtab_nochim.tsv --ref silva_nr99_v138.2_toGenus_trainset.fa.gz \
+  --species-ref silva_v138.2_assignSpecies.fa.gz --out-taxa taxa.tsv --out-bootstrap bootstrap.tsv
+```
+
+`pydada2 --help` and `pydada2 <step> --help` describe every option. Each step exposes all
+parameters of the Python function it wraps, with R's defaults. One exception: `assign-taxonomy`
+uses `--seed 0` by default, so reruns are reproducible.
+
+### Files each step needs and creates
+
+| Step | Required input | Created (required options) | Optional outputs |
+|---|---|---|---|
+| `trim-and-filter` | raw FASTQ pair (`--in-fwd`, `--in-rev`; gzipped or not) | filtered FASTQ pair (`--out-fwd`, `--out-rev`) | `--stats` |
+| `learn-errors` | all filtered forward and reverse FASTQs of a run | `--out errors.pkl`: pickle of `{"err_f", "err_r"}`, two 16 × Q error matrices | `--out-tsv` (long table: mate, transition, qual, rate), `--plot` (png/pdf/svg/...), `--stats` |
+| `infer-asv` | filtered FASTQ pair + `errors.pkl` (`--errors`); optional prior sequences (`--priors-fwd/--priors-rev`, FASTA) | one `.dada.json.gz` per mate (`--out-fwd`, `--out-rev`) | `--stats` |
+| `merge` | all `.dada.json.gz` files (forward and reverse, paired by the sample name stored inside) | `--out-seqtab` and `--out-seqtab-nochim` (TSV) | `--out-fasta` (non-chimeric ASVs), `--out-mergers` (every merged pair per sample), `--stats` |
+| `assign-taxonomy` | sequence table TSV (`--in`) + training FASTA (`--ref`, or a model saved with `--save-model`); optional species FASTA (`--species-ref`) | `--out-taxa` (TSV) | `--out-bootstrap` (TSV), `--save-model` (pickle; ~1.3 GB for SILVA), `--stats` |
+
+The DADA2 reference files for taxonomy (SILVA, RDP, UNITE, ...) are listed in the
+[DADA2 documentation](https://benjjneb.github.io/dada2/training.html).
+
+### File formats
+
+- **Sequence tables** (`seqtab.tsv`, `seqtab_nochim.tsv`): one row per ASV, columns `asv_id`,
+  `sequence` and one count column per sample (sorted by name). This is the transpose of R's
+  `seqtab`, which keeps the file readable with `cut`/`awk`. ASV ids (`ASV1`, `ASV2`, ...) are
+  assigned in `seqtab.tsv` and kept in `seqtab_nochim.tsv`, so the two tables join on `asv_id`.
+  `pydada2.read_seqtab()` reads a table back in R's orientation (samples × sequences).
+- **Taxonomy tables** (`taxa.tsv`, `bootstrap.tsv`): `asv_id`, `sequence`, then one column per
+  rank, in the order of the input table. An unassigned rank is an empty cell. Bootstrap values
+  are integers from 0 to 100; the exact-match `Species` column has no bootstrap.
+- **Denoised mates** (`*.dada.json.gz`, format `pydada2.dada/1`): gzipped JSON holding one mate
+  of one sample. It contains the sample name, the ASVs (`clusters`), the read-to-ASV maps and
+  the parameters, i.e. everything `merge` needs (inspect it with
+  `zcat sam1_F.dada.json.gz | jq .clusters`). Read it back in Python with
+  `pydada2.read_dada_json()`, which returns a `DadaResult` and a `Dereplication`; write it with
+  `pydada2.write_dada_json()`.
+- Output files are gzipped when their name ends in `.gz`. Missing output directories are
+  created. Gzipped outputs carry no timestamp, so identical results give identical files.
+
+### Conventions
+
+- **Options only**, no positional arguments. Steps that take many files read several paths
+  after one flag (`--in-fwd filtered/*_F.fq.gz`). Per-mate parameters take one value for both
+  mates or two values (forward, reverse): `--trunc-len 240 160`.
+- **stdout** carries only a TSV of read counts, so per-sample tables can be concatenated into a
+  read-tracking table. `--stats PATH` writes the same TSV to a file. Logs and warnings go to
+  stderr (`-v`, `-vv`).
+- **Sample names** come from `--sample-name` or the `--in-fwd` file name: `.gz`, then
+  `.fastq`/`.fq`/`.dada.json`, then a trailing `_R1`/`_1`/`_F` are removed, so
+  `sam1_R1.fastq.gz` becomes `sam1`.
+- **Threads:** `--threads N` (default 1).
+- **Exit codes:** `0` ok, `1` runtime error, `2` usage error, `3` no data. Exit code 3 means
+  no read passed the filter, no read merged, or the table has no ASVs. The stats are still
+  written. In Nextflow, use
+  `errorStrategy { task.exitStatus == 3 ? 'ignore' : 'terminate' }` to drop such samples.
+
 ## R → Python
 
 | R | Python |

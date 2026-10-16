@@ -164,6 +164,16 @@ Python API:
 - Plot functions return matplotlib Figures; `quality_profile_stats` is tested exactly against
   R's plotQualityProfile summary (`error_plot_data` is not compared with R).
 
+CLI (`cli.py`, spec in `CLI_SPEC.md`; formats in `formats.py`):
+- `formats.py` holds `read/write_dada_json` + `read/write_seqtab` (not `io.py`: `io` is imported
+  by `derep`/`denoise`, circular). `pydada2.dada/1` omits per-position quals (merge doesn't need
+  them); restored `DadaResult`s have `quality` with 0 columns and `err_in/err_out=None`.
+- `GreedyOption` wraps click's private parser `_Option.process` (click 8.5); re-check on click
+  upgrades. Per-mate options accept a 2nd value only if it parses as a number (`-inf`, `-4`).
+- Gzipped outputs: `_open_write` writes no file name and mtime 0 (byte-identical reruns).
+- Float TSV columns are written with `repr` (round-trip exact); read them back with
+  `float_precision="round_trip"` (pandas' default parser is not exact).
+
 Benchmarks:
 - `pipeline.R`/`pipeline.py` time each stage in-process and dump all compared outputs to
   `results/<tool>_t<thr>_r<rep>/results.json`; `run.py` adds wall time + peak RSS (`wait4`

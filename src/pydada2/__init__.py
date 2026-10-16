@@ -36,6 +36,7 @@ from .filtering import (
     filter_and_trim,
     remove_primers,
 )
+from .formats import read_dada_json, read_seqtab, write_dada_json, write_seqtab
 from .merge import merge_pairs
 from .seqtab import collapse_no_mismatch, make_sequence_table, merge_sequence_tables
 from .sequences import (
@@ -96,9 +97,13 @@ __all__ = [
     "make_sequence_table",
     "merge_pairs",
     "merge_sequence_tables",
+    "read_dada_json",
+    "read_seqtab",
     "remove_bimera_denovo",
     "remove_primers",
     "reverse_complement",
     "seq_complexity",
     "uniques_to_fasta",
+    "write_dada_json",
+    "write_seqtab",
 ]

@@ -23,12 +23,16 @@ classifiers = [
   "Operating System :: Microsoft :: Windows",
 ]
 dependencies = [
+  "click>=8.1",  # command-line interface (cli.py)
   "numpy>=1.26",
   "pandas>=2.2",
   "dnaio>=1.2",
   "xopen>=1.4",  # gzip output (io.py); also a dnaio dependency
   "scikit-misc>=0.5.1",  # 0.5.0 is yanked (broken with numpy 1.x)
 ]
+
+[project.scripts]
+pydada2 = "pydada2.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/raeslab/pyDADA2"
