@@ -14,9 +14,9 @@ core and moves the performance-critical R-level code to C++ too. All of this is 
 through a Pythonic, scikit-learn-style API.
 
 * Home: <https://github.com/raeslab/pyDADA2>
-* Upstream: <https://github.com/benjjneb/dada2> (the algorithms and their C++ implementation),
-  ported at commit [`b61fe2e`](https://github.com/benjjneb/dada2/tree/b61fe2e90115be08e78a01a16af89fd21402ca42)
-* License: LGPL-3.0-or-later, as the upstream code it derives from (see [License](#license))
+* Based on: <https://github.com/benjjneb/dada2> (the algorithms and their C++ implementation),
+  ported from commit [`b61fe2e`](https://github.com/benjjneb/dada2/tree/b61fe2e90115be08e78a01a16af89fd21402ca42)
+* License: LGPL-3.0-or-later, as the DADA2 code it derives from (see [License](#license))
 * **All credit for the method and its implementation goes to the DADA2 authors.** If you use
   pyDADA2, please [cite the original DADA2 papers](#citation), not this port.
 

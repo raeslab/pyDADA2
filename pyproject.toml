@@ -37,7 +37,6 @@ pydada2 = "pydada2.cli:main"
 [project.urls]
 Homepage = "https://github.com/raeslab/pyDADA2"
 Source = "https://github.com/raeslab/pyDADA2"
-Upstream = "https://github.com/benjjneb/dada2"
 
 [project.optional-dependencies]
 plot = ["matplotlib>=3.8"]

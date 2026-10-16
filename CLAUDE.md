@@ -19,8 +19,10 @@ parity status and every known difference from R: `docs/porting-notes.md`.
 
 ## Hard rules
 
-- **Git:** never commit, push, open PRs/issues unless asked; never touch the `origin` remote
-  (benjjneb/dada2) if it is configured. End work with a summary + proposed commit message.
+- **Git:** never commit, push, open PRs/issues unless asked. The only remote is `pydada2`
+  (raeslab/pyDADA2). **Never push to, open PRs/issues on, or add a remote for benjjneb/dada2:**
+  this project has diverged and is independent (references to it are for credit only). End work
+  with a summary + proposed commit message.
 - Never `#include <Rcpp.h>` anywhere; never Python/nanobind headers in `cpp/core/`.
 - **No code copied from R itself (GPL-2+).** Use Boost.Math / clean-room code for numerics.
 - Never loosen a tolerance or skip a parity test to get green; document real deviations in

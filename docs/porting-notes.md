@@ -7,7 +7,7 @@ R, and every known difference from R. It replaces the working documents used dur
 pyDADA2 is an **unofficial** port. The algorithms, their C++ implementation and most of the
 pipeline logic are the work of the DADA2 authors:
 
-- Upstream: <https://github.com/benjjneb/dada2>, ported at commit
+- Based on: <https://github.com/benjjneb/dada2>, ported from commit
   [`b61fe2e`](https://github.com/benjjneb/dada2/tree/b61fe2e90115be08e78a01a16af89fd21402ca42)
   (dada2 1.36.0).
 - Paper: Callahan BJ, McMurdie PJ, Rosen MJ, Han AW, Johnson AJA, Holmes SP (2016). DADA2:
