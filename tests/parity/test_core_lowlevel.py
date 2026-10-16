@@ -205,35 +205,43 @@ def test_input_validation():
         core.nwvec(["ACGT"], [], 5, -4, -8, -1, True)
 
 
+def _assert_complexity_matches_r(got, exp, key):
+    """Exact on Linux (R's fixtures come from glibc); within 2 ulp where log/exp are not glibc's
+    (MSVC CRT, Apple libm: deviation #9 in docs/porting-notes.md)."""
+    exp = np.array([np.nan if v is None else v for v in exp], dtype=float)
+    if sys.platform in ("win32", "darwin"):
+        np.testing.assert_array_equal(np.isnan(got), np.isnan(exp), err_msg=key)
+        ok = ~np.isnan(exp)
+        np.testing.assert_array_max_ulp(got[ok], exp[ok], maxulp=2)
+    else:
+        np.testing.assert_array_equal(got, exp, err_msg=key)
+
+
 def test_seq_complexity_exact():
     """seqComplexity sums like R's long-double sum(): uniform k-mer spectra give exact integers
     (NGAGTACCNN -> 6, not 5.999999999999998), so rm_lowcomplex thresholds match R exactly.
 
-    The general sequences are exact against R (glibc); on Windows and macOS the platform's log/exp
-    can differ from glibc by an ulp (deviation #9 in docs/porting-notes.md)."""
+    NGAGTACCNN == 6.0 is required on every platform (plain double summation gives 2 ulp less).
+    Otherwise exact on Linux; on Windows/macOS log/exp can differ from glibc by an ulp, also at
+    integer boundaries (Apple: 37 equal 3-mers -> 37.0, R 36.99999999999999)."""
     import pydada2 as dada2
 
     d = load("complexity_thresholds")
     assert d["k2"]["seqs"][0] == "NGAGTACCNN" and d["k2"]["value"][0] == 6.0
     with pytest.warns(UserWarning):
         got = dada2.seq_complexity(d["k2"]["seqs"])
-    np.testing.assert_array_equal(got, d["k2"]["value"])
+    assert got[0] == 6.0
+    _assert_complexity_matches_r(got, d["k2"]["value"], "thresholds k2")
     with pytest.warns(UserWarning):
         got = dada2.seq_complexity(d["k3"]["seqs"], kmer_size=3)
-    np.testing.assert_array_equal(got, d["k3"]["value"])
+    _assert_complexity_matches_r(got, d["k3"]["value"], "thresholds k3")
     got = dada2.seq_complexity(d["window"]["seqs"], window=12, by=3)
-    np.testing.assert_array_equal(got, d["window"]["value"])
+    _assert_complexity_matches_r(got, d["window"]["value"], "thresholds window")
     cx = load("sequences")["complexity"]
     for key, kw in (("k2", {}), ("k3", {"kmer_size": 3}), ("win50", {"window": 50, "by": 5})):
         with pytest.warns(UserWarning):
             got = dada2.seq_complexity(cx["seqs"], **kw)
-        exp = np.array([np.nan if v is None else v for v in cx[key]], dtype=float)
-        if sys.platform in ("win32", "darwin"):  # not glibc
-            np.testing.assert_array_equal(np.isnan(got), np.isnan(exp), err_msg=key)
-            ok = ~np.isnan(exp)
-            np.testing.assert_array_max_ulp(got[ok], exp[ok], maxulp=2)
-        else:
-            np.testing.assert_array_equal(got, exp, err_msg=key)
+        _assert_complexity_matches_r(got, cx[key], key)
 
 
 def test_match_pattern_max_mismatch_ge_length():
