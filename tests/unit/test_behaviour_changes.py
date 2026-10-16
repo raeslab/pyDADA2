@@ -1,4 +1,4 @@
-"""The behaviour changes listed in DEVIATIONS.md ("no effect on valid inputs"), each pinned.
+"""The behaviour changes listed in docs/porting-notes.md ("no effect on valid inputs"), each pinned.
 
 R would warn, error or read out of bounds on these inputs; pydada2 behaves as documented.
 """

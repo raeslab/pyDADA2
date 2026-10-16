@@ -1,4 +1,4 @@
-"""Run the R and Python MiSeq SOP pipelines repeatedly (spec §9.2, phase 11).
+"""Run the R and Python MiSeq SOP pipelines repeatedly.
 
 Usage: uv run python benchmarks/dataset/run.py [--tool R|py] [--fastq-dir NAME] [--results DIR]
                                                  [--python EXE]

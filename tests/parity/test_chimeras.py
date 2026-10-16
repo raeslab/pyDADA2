@@ -1,4 +1,4 @@
-"""Phase 7: chimera detection/removal and shift detection vs R."""
+"""Chimera detection/removal and shift detection vs R."""
 
 import numpy as np
 import pandas as pd

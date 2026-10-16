@@ -1,24 +1,30 @@
 cff-version: 1.2.0
 message: >-
-  pyDADA2 is an unofficial Python port of the DADA2 R package. If you use it, please cite the
-  DADA2 paper (preferred-citation below).
-title: "pyDADA2: exact amplicon sequence variant inference (DADA2) for Python"
+  pyDADA2 is an unofficial Python port of the DADA2 R package by Benjamin Callahan, Paul McMurdie,
+  Susan Holmes and the DADA2 contributors. All credit for the method and its implementation goes
+  to them: if you use pyDADA2, please cite the DADA2 paper (preferred-citation below), not this
+  port, plus the papers listed under references when they apply (PacBio error model, taxonomy
+  classifier). The port itself was made with extensive AI assistance to fit Python workflows.
+title: "pyDADA2: a Python port of DADA2"
+abstract: >-
+  Unofficial Python port of DADA2 1.36 (exact amplicon sequence variant inference). It reuses
+  DADA2's C++ core, moves performance-critical R code to C++ and exposes a scikit-learn-style API.
+  Validated against the R package. The method and its implementation are the work of the DADA2
+  authors (preferred-citation and references below); the author listed here only made the port.
 type: software
-license: LGPL-2.0-or-later
+license: LGPL-3.0-or-later
 repository-code: "https://github.com/raeslab/pyDADA2"
 version: 0.1.0
+keywords:
+  - amplicon sequencing
+  - ASV
+  - 16S rRNA
+  - microbiome
+  - DADA2
 authors:
   - family-names: Proost
     given-names: Sebastian
     email: sebastian.proost@vib.be
-references:
-  - type: software
-    title: dada2
-    version: 1.36.0
-    repository-code: "https://github.com/benjjneb/dada2"
-    authors:
-      - family-names: Callahan
-        given-names: Benjamin J.
 preferred-citation:
   type: article
   title: "DADA2: High-resolution sample inference from Illumina amplicon data"
@@ -37,7 +43,70 @@ preferred-citation:
       given-names: Susan P.
   journal: Nature Methods
   volume: 13
+  issue: 7
   start: 581
   end: 583
   year: 2016
   doi: 10.1038/nmeth.3869
+references:
+  - type: software
+    title: "dada2: Accurate, high-resolution sample inference from amplicon sequencing data"
+    version: 1.36.0
+    commit: b61fe2e90115be08e78a01a16af89fd21402ca42
+    repository-code: "https://github.com/benjjneb/dada2"
+    authors:
+      - family-names: Callahan
+        given-names: Benjamin J.
+      - family-names: McMurdie
+        given-names: Paul J.
+      - family-names: Holmes
+        given-names: Susan P.
+  - type: article
+    title: >-
+      High-throughput amplicon sequencing of the full-length 16S rRNA gene with
+      single-nucleotide resolution
+    notes: Cite when using the PacBio error model / PacBio full-length amplicons.
+    authors:
+      - family-names: Callahan
+        given-names: Benjamin J.
+      - family-names: Wong
+        given-names: Joan
+      - family-names: Heiner
+        given-names: Cheryl
+      - family-names: Oh
+        given-names: Steve
+      - family-names: Theriot
+        given-names: Casey M.
+      - family-names: Gulati
+        given-names: Ajay S.
+      - family-names: McGill
+        given-names: Sarah K.
+      - family-names: Dougherty
+        given-names: Michael K.
+    journal: Nucleic Acids Research
+    volume: 47
+    issue: 18
+    start: e103
+    year: 2019
+    doi: 10.1093/nar/gkz569
+  - type: article
+    title: >-
+      Naïve Bayesian Classifier for Rapid Assignment of rRNA Sequences into the New Bacterial
+      Taxonomy
+    notes: Cite when using TaxonomyClassifier / assign_taxonomy (RDP naive Bayesian classifier).
+    authors:
+      - family-names: Wang
+        given-names: Qiong
+      - family-names: Garrity
+        given-names: George M.
+      - family-names: Tiedje
+        given-names: James M.
+      - family-names: Cole
+        given-names: James R.
+    journal: Applied and Environmental Microbiology
+    volume: 73
+    issue: 16
+    start: 5261
+    end: 5267
+    year: 2007
+    doi: 10.1128/AEM.00062-07

@@ -1,4 +1,4 @@
-"""Hypothesis property tests (spec §8.4)."""
+"""Hypothesis property tests."""
 
 import tempfile
 from pathlib import Path

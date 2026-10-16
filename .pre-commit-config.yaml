@@ -1,4 +1,4 @@
-# Quality gates (spec §10.1). Install with: uv run pre-commit install
+# Optional local quality gates (CI runs the same checks). Install with: uv run pre-commit install
 repos:
   - repo: local
     hooks:

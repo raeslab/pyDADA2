@@ -1,4 +1,4 @@
-// Statistical helpers replacing Rcpp/R nmath functions in the ported DADA2 core (spec §5.4).
+// Statistical helpers replacing Rcpp/R nmath functions in the ported DADA2 core.
 
 #ifndef DADA2_STATS_H
 #define DADA2_STATS_H

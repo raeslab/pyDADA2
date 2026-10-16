@@ -1,9 +1,12 @@
-// Dev container for porting DADA2 (R + C++) to the pyDADA2 Python package. See spec.md §0/§2.
+// Dev container for pyDADA2 (C++ core + Python package). See README.md, "Development".
 {
 	"name": "pyDADA2",
 	"build": {
 		"context": "..",
-		"dockerfile": "../Dockerfile"
+		"dockerfile": "../Dockerfile",
+		// Set to "true" to also install R + R dada2 1.36 (only needed to regenerate the parity
+		// fixtures or to benchmark against R; see tests/reference/README.md).
+		"args": { "INSTALL_R": "false" }
 	},
 	"remoteUser": "vscode",
 	// Named volumes keep the Claude login, caches and the R library across rebuilds.

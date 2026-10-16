@@ -3,8 +3,8 @@
 #
 # Usage:  Rscript tests/reference/generate_reference.R
 #
-# Works against any installed dada2 1.36.x: the local copy in reference/r-dada2
-# (installed by scripts/devcontainer-post-create.sh) or a Bioconductor install.
+# Works against any installed dada2 1.36.x: the ported upstream commit (scripts/install_r_dada2.sh)
+# or a Bioconductor install.
 # Output: tests/reference/data/*.json[.gz] + inputs/ + err/*.npy + MANIFEST.json.
 #
 # Conventions (mirrored by tests/rparity.py):
@@ -664,7 +664,7 @@ log_msg("e2e")
 # makeSequenceTable, consensus chimera removal. Taxonomy is not stored here: R's assignTaxonomy
 # is not reproducible (std::random_device tie-breaks, also inside the bootstrap), which would make
 # this file change on every run. Every e2e ASV is among taxonomy.json's `queries`, so the e2e test
-# compares against those R results (spec §8.3 criterion).
+# compares against those R results (statistical taxonomy criterion, docs/porting-notes.md).
 getN <- function(x) sum(getUniques(x))
 ddF_le <- run_dada(dF_P, leF$err_out)
 ddR_le <- run_dada(dR, leR$err_out)
@@ -894,7 +894,7 @@ wj(list(table = mat_list(cm), table_opts = table_opts, table_calls = tab_calls,
                          removed = unq_list(removeBimeraDenovo(dd_chim))),
         shift = list(uniques = unq_list(sh_all), calls = shift_calls)), "chimera_coverage")
 
-# ================================================= numerics (REVIEW.md fixes) ===
+# ======================================================= numerics (review fixes) ===
 # Self-contained section with its own seeds, so it does not disturb the fixtures above.
 
 log_msg("ppois extended grid")
@@ -986,8 +986,8 @@ wj(list(cases = mpd,
                               output = fq_digest(fout))),
    "match_pattern_degenerate")
 # ================================================ review fixes (python layer) ===
-# Fixtures for the REVIEW.md section 1.3-1.6 fixes (written to review_python.json[.gz] and
-# loess_degenerate.json[.gz]; inputs/binned_singletons.fastq.gz, inputs/priors.fa,
+# Fixtures for the review fixes: loess, sequence tables, priors, smaller divergences (written to
+# review_python.json[.gz] and loess_degenerate.json[.gz]; inputs/binned_singletons.fastq.gz, inputs/priors.fa,
 # inputs/with_n.fastq.gz, inputs/species_tokens.fa).
 log_msg("review fixes (python layer)")
 TRN <- c("A2A", "A2C", "A2G", "A2T", "C2A", "C2C", "C2G", "C2T", "G2A", "G2C", "G2G", "G2T",

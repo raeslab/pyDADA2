@@ -11,26 +11,15 @@ cd "$(dirname "$(readlink -f "$0")")/.."
 # Git safety for bind mounts owned by a different host UID (Windows/macOS).
 git config --global --add safe.directory "$PWD"
 
-# 1. Install the original R package (reference implementation) from source, if present.
-#    Before the restructure (spec.md, phase 0) it lives at the repo root; afterwards
-#    in reference/r-dada2/.
-if [ -f reference/r-dada2/DESCRIPTION ]; then
-    R_PKG_DIR=reference/r-dada2
-elif [ -f DESCRIPTION ]; then
-    R_PKG_DIR=.
-else
-    R_PKG_DIR=""
-fi
-if [ -n "$R_PKG_DIR" ]; then
-    echo ">> Installing reference R package from $R_PKG_DIR"
-    R CMD INSTALL --no-docs --no-multiarch --library="$R_LIBS_USER" "$R_PKG_DIR" \
-        || echo "!! R CMD INSTALL failed; parity fixtures cannot be regenerated until fixed."
+# 1. Optional: R dada2 1.36 for regenerating fixtures / R benchmarks (image built with INSTALL_R=true).
+if command -v R >/dev/null 2>&1 && ! Rscript -e 'library(dada2)' >/dev/null 2>&1; then
+    echo ">> Installing R dada2 1.36 (reference for the parity fixtures)"
+    bash scripts/install_r_dada2.sh \
+        || echo "!! R dada2 install failed; parity fixtures cannot be regenerated until fixed."
 fi
 
 # 2. Sync the Python project (builds the nanobind extension in editable mode).
-if [ -f pyproject.toml ]; then
-    echo ">> uv sync"
-    uv sync --all-groups || echo "!! uv sync failed; run it manually to see the error."
-fi
+echo ">> uv sync"
+uv sync --all-groups || echo "!! uv sync failed; run it manually to see the error."
 
-echo ">> Done. Start Claude Code with: claude"
+echo ">> Done."

@@ -1,4 +1,4 @@
-"""Phase 3: dereplication, sequence utilities and quality profiles vs R."""
+"""Dereplication, sequence utilities and quality profiles vs R."""
 
 import numpy as np
 import pytest

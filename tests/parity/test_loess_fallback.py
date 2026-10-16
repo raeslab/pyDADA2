@@ -1,4 +1,4 @@
-"""Loess error model on few observed quality scores (REVIEW.md 1.3): parity with R."""
+"""Loess error model on few observed quality scores (skmisc aborts on R warnings): parity with R."""
 
 import numpy as np
 import pytest

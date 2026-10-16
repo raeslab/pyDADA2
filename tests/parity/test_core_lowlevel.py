@@ -1,4 +1,4 @@
-"""Phase 2b: low-level parity of the C++ core (pydada2._core) against R dada2 1.36."""
+"""Low-level parity of the C++ core (pydada2._core) against R dada2 1.36."""
 
 import dnaio
 import numpy as np
@@ -155,7 +155,7 @@ def test_ppois_upper():
 
 def test_ppois_upper_extended():
     """Large counts (n up to 2e6, lambda/n in [0.5, 1.5]), small counts, lambda down to 1e-320
-    and a dense grid around the underflow boundary (REVIEW.md 1.1/1.2)."""
+    and a dense grid around the underflow boundary (Poisson tail underflow and large-n accuracy)."""
     d = load("ppois_extended")
     assert sum(p == 0 for p in d["p_upper"]) > 500  # exact zeros near the boundary
     assert sum(0 < p < 2.2250738585072014e-308 for p in d["p_upper"]) > 1000  # subnormals

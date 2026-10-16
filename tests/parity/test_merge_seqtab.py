@@ -1,4 +1,4 @@
-"""Phase 6: mergePairs, makeSequenceTable, mergeSequenceTables, collapseNoMismatch vs R."""
+"""mergePairs, makeSequenceTable, mergeSequenceTables, collapseNoMismatch vs R."""
 
 import numpy as np
 import pandas as pd

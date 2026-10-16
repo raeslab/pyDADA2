@@ -1,4 +1,4 @@
-// C++ kernels ported from DADA2's R-level code (spec §6). Each kernel reproduces the R behaviour
+// C++ kernels ported from DADA2's R-level code (K1-K9, docs/porting-notes.md). Each kernel reproduces the R behaviour
 // (including the Bioconductor helper semantics) of the function(s) it is ported from.
 
 #ifndef DADA2_PORTED_H

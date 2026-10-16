@@ -1,11 +1,12 @@
-# Dev image for porting DADA2 (R + C++) to a Python package (uv + nanobind).
+# Development image for pyDADA2 (C++ + Python, uv + nanobind).
 #
 # Contents:
 #   - Ubuntu 24.04 (noble) base
 #   - C/C++ toolchain: gcc/g++, clang, clangd, cmake, ninja, ccache, gdb, valgrind, gcovr/lcov
 #   - Python 3.13 managed by uv (with headers, needed for nanobind)
-#   - R (current CRAN release) + dada2's R dependencies as binaries via r2u, so the
-#     original R package can be built from ./reference/r-dada2 to generate parity fixtures
+#   - optional (INSTALL_R=true): R (current CRAN release) + R dada2's dependencies as binaries
+#     via r2u. Only needed to regenerate the parity fixtures or to benchmark against R
+#     (scripts/install_r_dada2.sh then installs dada2 itself).
 #   - Claude Code (native installer)
 #
 # Ubuntu is used instead of python:*-slim because r2u (binary CRAN/Bioconductor
@@ -18,6 +19,7 @@ ARG PYTHON_VERSION=3.13
 ARG USERNAME=vscode
 ARG USER_UID=1000
 ARG USER_GID=1000
+ARG INSTALL_R=false
 
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
@@ -34,9 +36,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libboost-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# --- R via CRAN apt + r2u (binary CRAN & Bioconductor packages) --------------------
+# --- Optional: R via CRAN apt + r2u (binary CRAN & Bioconductor packages) ----------
 # Follows https://github.com/eddelbuettel/r2u/blob/master/inst/scripts/add_cranapt_noble.sh
-RUN gpg --homedir /tmp --no-default-keyring --keyring /usr/share/keyrings/r2u.gpg \
+RUN if [ "$INSTALL_R" != "true" ]; then exit 0; fi \
+    && gpg --homedir /tmp --no-default-keyring --keyring /usr/share/keyrings/r2u.gpg \
         --keyserver keyserver.ubuntu.com \
         --recv-keys A1489FE2AB99A21A 67C2D66C4B1D4339 51716619E084DAB9 \
     && printf 'Types: deb\nURIs: https://r2u.stat.illinois.edu/ubuntu\nSuites: noble\nComponents: main\nArch: amd64, arm64\nSigned-By: /usr/share/keyrings/r2u.gpg\n' \

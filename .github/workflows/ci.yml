@@ -10,6 +10,11 @@ on:
 permissions:
   contents: read
 
+# Cancel superseded runs of the same branch/PR (tag builds always run to completion).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 env:
   UV_VERSION: "0.12.8"  # same as the dev container (Dockerfile)
 
@@ -29,7 +34,7 @@ jobs:
       - run: uv run mypy src
 
   test:
-    # Parity with R is required on every OS (spec Q6); fixtures are committed, no R needed.
+    # Parity with R is required on every OS; fixtures are committed, no R needed.
     strategy:
       fail-fast: false
       matrix:
@@ -37,6 +42,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, macos-15-intel, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
@@ -118,6 +124,9 @@ jobs:
           # copy of tests/ outside the source tree so the wheel (not src/) is imported.
           CIBW_TEST_SOURCES: "tests pyproject.toml"
           CIBW_TEST_REQUIRES: "pytest hypothesis scikit-learn matplotlib"
+          # scikit-misc >= 0.5.3 has no macOS x86_64 wheels (building it needs Fortran): let pip
+          # fall back to the newest release that has a wheel.
+          CIBW_ENVIRONMENT_MACOS: PIP_PREFER_BINARY=1
           CIBW_TEST_COMMAND: >-
             python -m pytest tests -m "not slow" -p no:cacheprovider -o addopts=""
             --import-mode=importlib -ra

@@ -1,4 +1,4 @@
-"""Phase 3: filter_and_trim / remove_primers parity with R (output records via canonical md5)."""
+"""filter_and_trim / remove_primers parity with R (output records via canonical md5)."""
 
 import pytest
 

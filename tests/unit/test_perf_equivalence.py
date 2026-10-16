@@ -1,4 +1,4 @@
-"""Faster code paths give the same results (REVIEW.md 5.3)."""
+"""Faster code paths give the same results (performance work)."""
 
 import numpy as np
 import pandas as pd

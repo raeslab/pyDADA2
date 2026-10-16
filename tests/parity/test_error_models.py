@@ -1,4 +1,4 @@
-"""Phase 4: error models vs R (loessErrfun, noqualErrfun, makeBinnedQualErrfun, inflateErr...)."""
+"""Error models vs R (loessErrfun, noqualErrfun, makeBinnedQualErrfun, inflateErr...)."""
 
 import numpy as np
 import pytest

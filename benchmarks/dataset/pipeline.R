@@ -1,5 +1,5 @@
 #!/usr/bin/env Rscript
-# DADA2 tutorial pipeline on the MiSeq SOP data with R dada2 1.36 (spec §9.2, phase 11).
+# DADA2 tutorial pipeline on the MiSeq SOP data with R dada2 1.36.
 #
 # Usage: Rscript benchmarks/dataset/pipeline.R <threads> <outdir> [datadir] [fastq_subdir]
 # fastq_subdir defaults to MiSeq_SOP; files ending in _R1_001.fastq(.gz) / _R2_001.fastq(.gz) are

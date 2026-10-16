@@ -1,4 +1,4 @@
-"""n_jobs determinism (spec §8.4): every kernel that uses parallel_for gives identical results
+"""n_jobs determinism: every kernel that uses parallel_for gives identical results
 for 1 and 4 threads. (dada_uniques, DADA pseudo-pooling, table_bimera, collapse_no_mismatch,
 filter_and_trim and taxonomy are covered in the parity tests.)"""
 

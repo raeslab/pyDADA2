@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fetch the phase-11 benchmark data (spec §9.2) into benchmarks/dataset/data/ (git-ignored).
+# Fetch the dataset benchmark data into benchmarks/dataset/data/ (git-ignored).
 #
 #   * MiSeq SOP (Kozich et al. 2013): 20 samples (19 mice + mock), 16S V4, MiSeq 2x250
 #   * SILVA 138.2 DADA2-formatted training set + species set (Zenodo 14169026)

@@ -1,4 +1,4 @@
-"""DADA2 tutorial pipeline on the MiSeq SOP data with pydada2 (spec §9.2, phase 11).
+"""DADA2 tutorial pipeline on the MiSeq SOP data with pydada2.
 
 Usage: python benchmarks/dataset/pipeline.py <threads> <outdir> [datadir] [fastq_subdir]
 

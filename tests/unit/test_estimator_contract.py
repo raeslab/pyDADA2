@@ -1,4 +1,4 @@
-"""Estimator contract (spec §8.4): ``fit`` returns ``self``; no function mutates its inputs."""
+"""Estimator contract: ``fit`` returns ``self``; no function mutates its inputs."""
 
 import copy
 

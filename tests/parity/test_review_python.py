@@ -1,4 +1,4 @@
-"""Parity of the REVIEW.md 1.3-1.6 fixes with R (fixtures: review_python, loess_degenerate)."""
+"""Parity of the review fixes with R (fixtures: review_python, loess_degenerate)."""
 
 import hashlib
 import warnings

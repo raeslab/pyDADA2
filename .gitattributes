@@ -1,8 +1,17 @@
-# Keep LF endings for files executed inside the Linux container (Windows host safety)
+# LF everywhere: shell scripts run in the Linux container, and the FASTA/FASTQ/JSON test inputs
+# must be byte-identical on every OS (Windows CI included).
 * text=auto eol=lf
 *.sh text eol=lf
 Dockerfile text eol=lf
+
+# Binary data
 *.gz binary
-*.rda binary
-*.npz binary
 *.npy binary
+*.npz binary
+*.png binary
+*.pdf binary
+
+# Generated files: collapsed in GitHub diffs, excluded from language statistics
+tests/reference/data/** linguist-generated
+src/pydada2/_core.pyi linguist-generated
+uv.lock linguist-generated

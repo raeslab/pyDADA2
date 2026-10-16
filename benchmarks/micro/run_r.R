@@ -1,5 +1,5 @@
 #!/usr/bin/env Rscript
-# Micro-benchmarks of R dada2 1.36 on the bundled example data (spec §9.1).
+# Micro-benchmarks of R dada2 1.36 on the bundled example data.
 #
 # Usage: Rscript benchmarks/micro/run_r.R [repeats] [outfile]
 #

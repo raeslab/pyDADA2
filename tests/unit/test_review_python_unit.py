@@ -1,4 +1,4 @@
-"""Unit tests for the REVIEW.md 1.4-1.6 fixes of the Python layer."""
+"""Unit tests for the review fixes of the Python layer."""
 
 import gzip
 

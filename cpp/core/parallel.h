@@ -1,4 +1,4 @@
-// parallel_for replacing RcppParallel::parallelFor in the ported DADA2 core (spec §5.3).
+// parallel_for replacing RcppParallel::parallelFor in the ported DADA2 core.
 //
 // Work is split into contiguous chunks of `grain` indices that are claimed dynamically by up to
 // `n_threads` threads: the calling thread plus helpers from a persistent process-wide thread pool

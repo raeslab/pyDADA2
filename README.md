@@ -1,13 +1,24 @@
 # pyDADA2
 
+> [!WARNING]
+> **Experimental: not yet ready for production use.** pyDADA2 reproduces R dada2 1.36 exactly on
+> every dataset it has been validated on (Linux x86_64, see below), but it is new software that
+> has not yet been tested by other users, on other platforms (macOS, Windows, ARM) or on real
+> datasets of other amplicon types (ITS, PacBio full-length 16S, 18S). Check its results against
+> R dada2 before relying on them, and please [report](https://github.com/raeslab/pyDADA2/issues)
+> any difference you find.
+
 Exact amplicon sequence variant (ASV) inference for Python: an **unofficial** port of the
 [DADA2](https://github.com/benjjneb/dada2) R package (version 1.36). It reuses DADA2's C++
 core and moves the performance-critical R-level code to C++ too. All of this is exposed
 through a Pythonic, scikit-learn-style API.
 
 * Home: <https://github.com/raeslab/pyDADA2>
-* Upstream: <https://github.com/benjjneb/dada2> (the algorithms and their C++ implementation)
-* License: LGPL (see `LICENSE`), as the upstream code it derives from
+* Upstream: <https://github.com/benjjneb/dada2> (the algorithms and their C++ implementation),
+  ported at commit [`b61fe2e`](https://github.com/benjjneb/dada2/tree/b61fe2e90115be08e78a01a16af89fd21402ca42)
+* License: LGPL-3.0-or-later, as the upstream code it derives from (see [License](#license))
+* **All credit for the method and its implementation goes to the DADA2 authors.** If you use
+  pyDADA2, please [cite the original DADA2 papers](#citation), not this port.
 
 Results are validated against R dada2 1.36 on three datasets (see
 [Benchmark](#benchmark-pydada2-vs-r-dada2)):
@@ -17,7 +28,7 @@ Results are validated against R dada2 1.36 on three datasets (see
 
 Filtering, dereplication, error learning, denoising, merging, sequence tables and chimera
 removal give identical results on all three. Known differences are listed in
-[`DEVIATIONS.md`](DEVIATIONS.md); for example, taxonomy bootstrap values differ by random-number
+[`docs/porting-notes.md`](docs/porting-notes.md#3-known-differences-from-r-dada2-136); for example, taxonomy bootstrap values differ by random-number
 noise only. pydada2 is **6–12x faster than R** on MiSeq SOP, and 4.5x on the larger dataset.
 
 ## Installation
@@ -25,6 +36,8 @@ noise only. pydada2 is **6–12x faster than R** on MiSeq SOP, and 4.5x on the l
 pydada2 is not on PyPI yet: the name `pydada2` belongs to an unrelated project there (see
 "Status"), so `pip install pydada2` does **not** install this package. Install it from source
 or from the wheels built by CI. The plotting functions need matplotlib (the `plot` extra).
+On Intel macOS, use scikit-misc 0.5.2 (`pip install "scikit-misc==0.5.2"`) unless you have a
+Fortran compiler: later releases ship no wheels for that platform.
 
 From source (needs a C++17 compiler and CMake; uses [uv](https://docs.astral.sh/uv/)):
 
@@ -102,8 +115,9 @@ pipeline with identical parameters, with SILVA 138.2 for taxonomy. Setup:
 - **Versions:**
   - R 4.6.1 / dada2 1.36.0;
   - Python 3.13 / pydada2 0.1.0 at commit `5e6453a` ("now");
-  - for comparison, the previous pydada2 at `dff04da` ("before"), before the
-    [`REVIEW.md`](REVIEW.md) fixes.
+  - for comparison, the previous pydada2 at `dff04da` ("before"), before the fixes and
+    optimisations that followed an independent review
+    ([`docs/porting-notes.md`](docs/porting-notes.md#4-independent-review)).
 - **Scripts:** every version ran the same pipeline scripts.
 - **Multithreading:** R's `mergePairs` and `addSpecies` have no multithreading; pydada2 uses
   `n_jobs` there too.
@@ -121,7 +135,7 @@ Learned error rates agree with R to a relative 1.4e-14. Every output, including 
 bootstraps at the same seed, is bit-identical between the previous and the current pydada2.
 
 **Taxonomy.** pydada2 uses a different random-number generator for the bootstrap (by design,
-see [`DEVIATIONS.md`](DEVIATIONS.md)). 229 of 232 ASVs get the same assignment at every level.
+see [`docs/porting-notes.md`](docs/porting-notes.md#3-known-differences-from-r-dada2-136)). 229 of 232 ASVs get the same assignment at every level.
 The other 3 differ at a level where R's bootstrap was 45–48, right at the `min_boot=50` cutoff.
 
 **pydada2 is 6.0x faster than R at 1 thread and 12.1x at 8 threads**, and uses 40–50 % less
@@ -180,7 +194,8 @@ Error rates agree to a relative 9.2e-15.
 
 **What changed since the previous version.** It created the clusters of 8 of the 724 denoising
 runs in a different order than R (same ASVs and abundances). The cause was a Poisson tail that
-underflowed to 0 where R returns a tiny subnormal number ([`REVIEW.md`](REVIEW.md) §1.1). That
+underflowed to 0 where R returns a tiny subnormal number (deviation #1 in
+[`docs/porting-notes.md`](docs/porting-notes.md#3-known-differences-from-r-dada2-136)). That
 is fixed, so these runs now match R too.
 
 **Taxonomy:** 412 of 420 ASVs are identical at every level. The other 8 differ at genus only,
@@ -233,17 +248,67 @@ Per-function micro-benchmarks on the small bundled example data are in
 
 ## Status
 
-Work in progress, developed following [`spec.md`](spec.md). [`REVIEW.md`](REVIEW.md) is an
-independent review of the port, with the status of every finding. The distribution name `pydada2` is
-already used on PyPI by another project, so the final name is still to be decided.
+Experimental (see the warning at the top). How the port was built, how it was validated against
+R, every known difference from R and the outcome of an independent review are summarised in
+[`docs/porting-notes.md`](docs/porting-notes.md).
+
+Open items:
+- CI (Linux, macOS, Windows; wheels) has not run yet, so parity on platforms other than Linux
+  x86_64 is unverified;
+- the distribution name `pydada2` is already used on PyPI by another project, so the package
+  will be renamed before it is published there.
+
+## Development
+
+```bash
+uv sync --all-groups                         # env + editable build (C++ rebuilds on import)
+uv run pytest -n auto --cov-fail-under=90    # full suite incl. R parity (no R needed)
+uv run ruff format . && uv run ruff check . && uv run mypy src
+uv run pre-commit install                    # optional: run the same checks on commit/push
+```
+
+The dev container (`.devcontainer/`) provides the C++ toolchain and Python. R is only needed to
+regenerate the parity fixtures or to benchmark against R; see
+[`tests/reference/README.md`](tests/reference/README.md).
 
 ## Citation
 
-If you use this software, please cite the DADA2 paper:
+**Please cite the original work, not this port.** The method, its C++ implementation and the
+pipeline that pyDADA2 reproduces were developed by Benjamin Callahan, Paul McMurdie, Susan Holmes
+and the DADA2 contributors ([benjjneb/dada2](https://github.com/benjjneb/dada2)). pyDADA2 only
+translates their R package to Python, to fit Python-based workflows. The port was made with
+extensive AI assistance (Claude Code) and validated against the R package (see
+[`docs/porting-notes.md`](docs/porting-notes.md)).
+
+If you use pyDADA2, cite the DADA2 paper:
 
 > Callahan BJ, McMurdie PJ, Rosen MJ, Han AW, Johnson AJA, Holmes SP (2016).
 > DADA2: High-resolution sample inference from Illumina amplicon data.
-> *Nature Methods*, 13, 581–583. doi:10.1038/nmeth.3869
+> *Nature Methods*, 13, 581–583. doi:[10.1038/nmeth.3869](https://doi.org/10.1038/nmeth.3869)
 
-and, for PacBio full-length amplicons, Callahan et al. (2019), *Nucleic Acids Research*, 47(18),
-e103. doi:10.1093/nar/gkz569. Machine-readable metadata is in [`CITATION.cff`](CITATION.cff).
+Depending on what you use, also cite:
+
+- **PacBio full-length amplicons** (`PacBioErrorModel`, PacBio parameters):
+  Callahan BJ, Wong J, Heiner C, Oh S, Theriot CM, Gulati AS, McGill SK, Dougherty MK (2019).
+  High-throughput amplicon sequencing of the full-length 16S rRNA gene with single-nucleotide
+  resolution. *Nucleic Acids Research*, 47(18), e103.
+  doi:[10.1093/nar/gkz569](https://doi.org/10.1093/nar/gkz569)
+- **Taxonomy** (`TaxonomyClassifier` / `assign_taxonomy`, DADA2's implementation of the RDP
+  naive Bayesian classifier): Wang Q, Garrity GM, Tiedje JM, Cole JR (2007). Naive Bayesian
+  classifier for rapid assignment of rRNA sequences into the new bacterial taxonomy. *Applied
+  and Environmental Microbiology*, 73(16), 5261–5267.
+  doi:[10.1128/AEM.00062-07](https://doi.org/10.1128/AEM.00062-07)
+- **The reference database** you classify against (e.g. SILVA, UNITE, GTDB), as its
+  maintainers request.
+
+Machine-readable citation metadata is in [`CITATION.cff`](CITATION.cff); GitHub's "Cite this
+repository" button gives the DADA2 paper.
+
+## License
+
+pyDADA2 continues DADA2's code, which is licensed under the LGPL. It is distributed under the GNU
+Lesser General Public License, version 3 or (at your option) any later version: see
+[`LICENSE`](LICENSE) and the GNU GPL v3 it builds on, [`COPYING`](COPYING). Upstream DADA2
+copyright notices are kept in every file derived from it. The compiled extension also contains
+nanobind, robin-map and Boost.Math, under their own permissive licenses
+([`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)).

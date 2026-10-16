@@ -1,4 +1,4 @@
-"""Loader for the R reference fixtures in tests/reference/data (see CLAUDE.md, "Fixtures").
+"""Loader for the R reference fixtures in tests/reference/data (format: tests/reference/README.md).
 
 R values are always JSON arrays (``auto_unbox=FALSE``); use :func:`scalar` to unwrap.
 """
@@ -228,14 +228,14 @@ def r_taxonomy(obj: dict[str, list[Any]]) -> np.ndarray:
 
 def binomial_bound(p_a: Any, p_b: Any = None) -> np.ndarray:
     """3 sigma of the difference of two independent 100-draw bootstrap estimates (+2 for ties),
-    using the pooled estimate of the underlying proportion (spec §8.3)."""
+    using the pooled estimate of the underlying proportion."""
     pooled = p_a if p_b is None else (np.asarray(p_a) + np.asarray(p_b)) / 2
     p = np.clip(np.asarray(pooled, dtype=float) / 100.0, 0.0, 1.0)
     return np.asarray(3 * np.sqrt(2 * 100 * p * (1 - p)) + 2)
 
 
 def assert_bootstrap_agreement(boot: Any, r_boot: Any) -> None:
-    """Spec §8.3: median |boot_py - boot_R| <= 10 and every entry within 3 sigma."""
+    """Taxonomy criterion: median |boot_py - boot_R| <= 10 and every entry within 3 sigma."""
     boot, r_boot = np.asarray(boot, dtype=float), np.asarray(r_boot, dtype=float)
     assert boot.shape == r_boot.shape
     diff = np.abs(boot - r_boot)
@@ -246,7 +246,7 @@ def assert_bootstrap_agreement(boot: Any, r_boot: Any) -> None:
 
 
 def taxonomy_disagreements(got: Any, exp: Any, r_boot: Any, min_boot: float = 50) -> list[Any]:
-    """Spec §8.3 at ``min_boot``: (row, level, R bootstrap) of every first disagreement per row.
+    """At ``min_boot``: (row, level, R bootstrap) of every first disagreement per row.
 
     Raises AssertionError for a disagreement whose R bootstrap is outside min_boot +- 3 sigma.
     """

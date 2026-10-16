@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the C++-facing tests against an AddressSanitizer build of pydada2._core (spec §5.2).
+# Run the C++-facing tests against an AddressSanitizer build of pydada2._core.
 # Uses a throwaway venv because the editable install's import hook would shadow the ASan build.
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")/.."

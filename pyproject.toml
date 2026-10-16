@@ -3,15 +3,18 @@ requires = ["scikit-build-core>=0.11", "nanobind>=2.4"]
 build-backend = "scikit_build_core.build"
 
 [project]
-name = "pydada2"  # NOTE: name taken on PyPI by another project (spec Q1); placeholder
+name = "pydada2"  # NOTE: taken on PyPI by another project; to be renamed before publishing there
 version = "0.1.0"
 description = "Exact amplicon sequence variant inference (DADA2) for Python"
 readme = "README.md"
-license = "LGPL-2.0-or-later"  # placeholder, see spec Q9
-license-files = ["LICENSE"]
+license = "LGPL-3.0-or-later"  # DADA2 is LGPL; latest LGPL version (README, "License")
+license-files = ["LICENSE", "COPYING", "THIRD_PARTY_NOTICES.md"]
+# Author of the port. DADA2 itself (the method and the code ported here) is by Callahan et al.:
+# see README "Citation" and CITATION.cff (preferred-citation).
 authors = [{ name = "Sebastian Proost", email = "sebastian.proost@vib.be" }]
 requires-python = ">=3.11"
 classifiers = [
+  "Development Status :: 3 - Alpha",
   "Programming Language :: Python :: 3",
   "Programming Language :: C++",
   "Topic :: Scientific/Engineering :: Bio-Informatics",
@@ -67,8 +70,8 @@ editable.rebuild = true
 editable.verbose = false
 wheel.py-api = "cp312"  # abi3 wheels for CPython >= 3.12 (nanobind STABLE_ABI); per-version for 3.11
 sdist.exclude = [
-  "reference/", "/tests/", "benchmarks/", ".devcontainer/", ".github/", "scripts/", "build/",
-  "spec.md", "CLAUDE.md", "REVIEW.md", "Dockerfile", ".dockerignore", ".pre-commit-config.yaml", ".clangd",
+  "/tests/", "benchmarks/", ".devcontainer/", ".github/", "scripts/", "build/",
+  "CLAUDE.md", "Dockerfile", ".dockerignore", ".pre-commit-config.yaml", ".clangd",
 ]
 
 [tool.scikit-build.cmake.define]
@@ -91,7 +94,7 @@ markers = [
 source = ["pydada2"]
 
 [tool.coverage.report]
-# The 90 % gate (spec §8.1) applies to the full run only, so it is passed on the command line
+# The 90 % gate applies to the full run only, so it is passed on the command line
 # (`pytest -m "not slow" --cov-fail-under=90`: CI and the pre-commit hook). Marker subsets such as
 # `pytest -m parity` or `-m slow` report coverage but do not fail on it.
 exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "@overload"]
@@ -99,7 +102,7 @@ exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "@overload"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-extend-exclude = ["reference", "*.md"]
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "N", "SIM", "RUF", "NPY", "PD", "D"]

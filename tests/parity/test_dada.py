@@ -1,4 +1,4 @@
-"""Phase 5: DADA estimator parity with R's dada() for all fixture variants; learn_errors."""
+"""DADA estimator parity with R's dada() for all fixture variants; learn_errors."""
 
 import numpy as np
 import pytest

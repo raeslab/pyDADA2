@@ -21,7 +21,7 @@ file(GLOB_RECURSE DADA2_CORE_SOURCES CONFIGURE_DEPENDS
 add_library(dada2_core STATIC ${DADA2_CORE_SOURCES})
 target_include_directories(dada2_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/cpp/core")
 
-# Floating-point reproducibility vs R (spec §4.2): no FMA contraction, no fast-math.
+# Floating-point reproducibility vs R: no FMA contraction, no fast-math.
 if(MSVC)
   target_compile_options(dada2_core PRIVATE /fp:precise /W3)
   target_compile_definitions(dada2_core PRIVATE _CRT_SECURE_NO_WARNINGS)

@@ -508,7 +508,7 @@ NB_MODULE(_core, m) {
       },
       "model"_a, "seqs"_a, "rcs"_a, "try_rc"_a, "seed"_a, "n_threads"_a = 1,
       "Classify sequences; returns dict(tax, boot, boot_tax) with 0-based genus indices.");
-  // ---------------------------------------------------------- ported kernels (spec §6) ---
+  // ---------------------------------------------------------- ported kernels (K1-K9) ---
   m.def("detect_quality_offset", &dada2::detect_quality_offset, "quals"_a,
         "ShortRead quality-type auto detection on a chunk: 64 (Solexa) or 33 (Sanger).");
   m.def(

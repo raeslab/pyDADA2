@@ -1,4 +1,4 @@
-"""Phase 2b: dada_uniques parity (single-call fixtures) and thread-count determinism."""
+"""dada_uniques parity (single-call fixtures) and thread-count determinism."""
 
 import numpy as np
 import pytest

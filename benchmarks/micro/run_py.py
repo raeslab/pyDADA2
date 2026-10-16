@@ -1,4 +1,4 @@
-"""Micro-benchmarks of pydada2 on the bundled example data (spec §9.1).
+"""Micro-benchmarks of pydada2 on the bundled example data.
 
 Usage: uv run python benchmarks/micro/run_py.py [repeats] [outfile]
 

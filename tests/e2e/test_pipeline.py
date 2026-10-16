@@ -2,7 +2,7 @@
 
 filter_and_trim -> learn_errors -> derep -> DADA -> merge_pairs -> make_sequence_table ->
 consensus chimera removal -> assign_taxonomy, as in the DADA2 tutorial. The track table and
-seqtab.nochim must be identical to R. Taxonomy is compared at every level with the spec §8.3
+seqtab.nochim must be identical to R. Taxonomy is compared at every level with the statistical
 criterion against R's results for the same ASVs (taxonomy.json `queries`; R's taxonomy is not
 reproducible run to run, so it is not stored in e2e.json).
 """

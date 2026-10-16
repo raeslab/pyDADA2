@@ -1,4 +1,4 @@
-"""Phase 8: taxonomy vs R (spec §8.3: exact top hits; statistical bootstrap agreement)."""
+"""Taxonomy vs R (exact top hits; statistical bootstrap agreement)."""
 
 import numpy as np
 import pandas as pd
@@ -59,8 +59,8 @@ def test_try_rc_top_hits(tx):
 
 @pytest.mark.parametrize("which,qkey", [("boot0", "queries"), ("boot0_full", "queries_full")])
 def test_bootstrap_statistical(tx, which, qkey):
-    # Bootstrap values differ from R only by RNG noise (DEVIATIONS.md #2): every entry within
-    # 3 sigma of binomial noise, median |difference| <= 10 (spec §8.3).
+    # Bootstrap values differ from R only by RNG noise (deviation #2): every entry within
+    # 3 sigma of binomial noise, median |difference| <= 10 (docs/porting-notes.md, §2).
     clf = TaxonomyClassifier(min_boot=0, random_state=100).fit(TRAIN)
     boot = clf.predict_bootstrap(tx[qkey]).to_numpy()
     assert_bootstrap_agreement(boot, np.array(tx[which]["boot"]))
@@ -80,10 +80,11 @@ def test_min_boot_50_agreement(tx, which, qkey, bkey):
 
 
 def test_deviation_2_magnitude(tx):
-    # Pins DEVIATIONS.md #2 tighter than the §8.3 criterion, so it cannot grow silently. Over the
-    # 109 queries: bootstrap |delta| median 0, max 15; 8 sequences differ at min_boot=50 (7-9
-    # depending on the R run: R's own tie-breaking is not reproducible), all with R bootstrap
-    # 42-55. The bounds leave room for that R-side variation only.
+    # Pins deviation #2 (docs/porting-notes.md) tighter than the statistical criterion, so it
+    # cannot grow silently. Over the 109 queries: bootstrap |delta| median 0, max 15; 8 sequences
+    # differ at min_boot=50 (7-9 depending on the R run: R's own tie-breaking is not
+    # reproducible), all with R bootstrap 42-55. The bounds leave room for that R-side
+    # variation only.
     deltas, disagreements = [], []
     for which, qkey, bkey in [
         ("minboot50", "queries", "boot0"),
