@@ -1,5 +1,7 @@
 """Low-level parity of the C++ core (pydada2._core) against R dada2 1.36."""
 
+import sys
+
 import dnaio
 import numpy as np
 import pytest
@@ -205,7 +207,10 @@ def test_input_validation():
 
 def test_seq_complexity_exact():
     """seqComplexity sums like R's long-double sum(): uniform k-mer spectra give exact integers
-    (NGAGTACCNN -> 6, not 5.999999999999998), so rm_lowcomplex thresholds match R exactly."""
+    (NGAGTACCNN -> 6, not 5.999999999999998), so rm_lowcomplex thresholds match R exactly.
+
+    The general sequences are exact against R (glibc); on Windows and macOS the platform's log/exp
+    can differ from glibc by an ulp (deviation #9 in docs/porting-notes.md)."""
     import pydada2 as dada2
 
     d = load("complexity_thresholds")
@@ -223,7 +228,12 @@ def test_seq_complexity_exact():
         with pytest.warns(UserWarning):
             got = dada2.seq_complexity(cx["seqs"], **kw)
         exp = np.array([np.nan if v is None else v for v in cx[key]], dtype=float)
-        np.testing.assert_array_equal(got, exp, err_msg=key)
+        if sys.platform in ("win32", "darwin"):  # not glibc
+            np.testing.assert_array_equal(np.isnan(got), np.isnan(exp), err_msg=key)
+            ok = ~np.isnan(exp)
+            np.testing.assert_array_max_ulp(got[ok], exp[ok], maxulp=2)
+        else:
+            np.testing.assert_array_equal(got, exp, err_msg=key)
 
 
 def test_match_pattern_max_mismatch_ge_length():

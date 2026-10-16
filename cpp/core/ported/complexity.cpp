@@ -6,9 +6,11 @@
 // The entropy terms are summed like R's sum(), which accumulates doubles in a long double
 // (LDOUBLE) and rounds the total to double once: with plain double accumulation a uniform
 // spectrum such as NGAGTACCNN (6 distinct 2-mers) gives 5.999999999999998 instead of R's 6, which
-// flips rm_lowcomplex thresholds. MSVC has no extended long double, so there a double-double
-// (TwoSum) accumulator stands in for R's 80-bit sum (R on Windows is built with mingw-w64).
+// flips rm_lowcomplex thresholds. Where long double has no extended precision (MSVC, Apple
+// arm64) a double-double (TwoSum) accumulator stands in for R's 80-bit sum (the fixtures come
+// from R on x86_64 Linux).
 
+#include <cfloat>
 #include <cmath>
 
 #include "../dada.h"
@@ -30,8 +32,8 @@ inline int nt_index(char c) {
 }
 
 // Accumulator reproducing R's sum() of doubles (long double accumulation, rounded once).
-#if defined(_MSC_VER)
-struct ExtendedSum {  // long double == double on MSVC: double-double (TwoSum) instead
+#if LDBL_MANT_DIG < 64
+struct ExtendedSum {  // long double == double (MSVC, Apple arm64): double-double (TwoSum) instead
   double hi = 0.0, lo = 0.0;
   void add(double x) {
     const double s = hi + x;

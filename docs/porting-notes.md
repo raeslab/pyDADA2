@@ -150,6 +150,7 @@ Stability dataset it comes from (362 samples, 3.65M read pairs), with SILVA 138.
 | 6 | `learn_errors(randomize=True)` | sample order from `numpy.random.default_rng(random_state)` | different RNG | identical with `randomize=False` (default) | `test_dada.py` |
 | 7 | `allow_multiple` species names | joined in code-point order | R's `sort()` uses locale collation | only for names differing in case/punctuation | `test_review_python.py` |
 | 8 | `BimeraRemover(method="per-sample").is_bimera_` | sequences absent from a sample are reported False | speed (89 s → 1 s on 30 × 3000) | output table identical | `test_perf_equivalence.py` |
+| 9 | `seq_complexity` on Windows and macOS | last-ulp differences from R on Linux | the platform's `log`/`exp` (MSVC CRT, Apple libm) are not glibc's, which R's fixtures come from | ≤ 1 ulp (Windows: 2/206 fixture values at `kmer_size=3`, rel 1.4e-16); the `complexity_thresholds` cases (uniform spectra, exact integers) stay exact | `test_core_lowlevel.py::test_seq_complexity_exact` (≤ 2 ulp on Windows/macOS, exact on Linux) |
 
 All performance work was verified to change no output (bit-identical on MiSeq SOP at 1 and 8
 threads, taxonomy included at the same seed, and on Stability).
@@ -187,8 +188,9 @@ reads containing U, X or `*` (counted as non-ACGT); reads shorter than the `orie
   queries shorter than the k-mer size; `rm_lowcomplex` on reads without any ACGT k-mer;
   single-end `orient_fwd` on reads shorter than the orientation sequence.
 - Platform consistency: the SSE k-mer routines are emulated exactly off x86 (R on ARM forces
-  `SSE=0` and can differ); `seq_complexity` reproduces R's long-double `sum()` (double-double on
-  MSVC).
+  `SSE=0` and can differ); `seq_complexity` reproduces R's long-double `sum()` (double-double where
+  `long double` is plain double: MSVC, Apple arm64; their `log`/`exp` can still differ by an
+  ulp, deviation #9).
 
 ## 4. Independent review
 

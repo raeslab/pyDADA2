@@ -107,7 +107,8 @@ C++ core:
   direct λ^m e^-λ/m! for λ < 1, log space below DBL_MIN; Boost `gamma_p` (`promote_double<false>`)
   at/above the mode. Don't revert to plain `gamma_p`: it underflows to 0 where R returns a
   subnormal (changes DADA cluster order vs R) and loses 1e-10 at large n.
-- `seq_complexity` sums in long double like R's `sum()` (double-double on MSVC).
+- `seq_complexity` sums in long double like R's `sum()`; double-double where `LDBL_MANT_DIG < 64`
+  (MSVC, Apple arm64: `long double` is plain double there).
 - Taxonomy: `TaxonomyModel` (fit once) + `assign_taxonomy`; uniforms from `mt19937_64(seed)` in
   upstream's count/order (only the used prefix is drawn); tie-breaks from a per-sequence
   generator ⇒ independent of n_threads. Table is k-mer-major `[4^8][ngenus padded to 16]`, built
