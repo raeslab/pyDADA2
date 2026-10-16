@@ -82,7 +82,7 @@ std::vector<int> match_ref(const std::vector<std::string> &seqs, const std::stri
   }
   std::sort(words.begin(), words.end());
   words.erase(std::unique(words.begin(), words.end()), words.end());
-  const unsigned int BITS = 24;
+  static constexpr unsigned int BITS = 24;  // static: MSVC rejects reading a local in a [] lambda
   std::vector<uint64_t> bitmap(((size_t)1 << BITS) / 64, 0);
   auto hash = [](uint64_t v) { return (uint32_t)((v * 0x9E3779B97F4A7C15ULL) >> (64 - BITS)); };
   for(uint64_t v : words) { const uint32_t h = hash(v); bitmap[h >> 6] |= (uint64_t)1 << (h & 63); }

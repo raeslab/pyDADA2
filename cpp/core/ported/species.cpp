@@ -54,7 +54,8 @@ std::vector<std::vector<int>> species_hits(const std::vector<std::string> &queri
   const size_t nq = queries.size();
   const size_t nr = refs.size();
   // Group the distinct queries by length: rolling hash of each -> (query text, query indices).
-  constexpr uint64_t B = 1099511628211ULL;  // odd multiplier, arithmetic mod 2^64
+  // static: MSVC rejects reading a local constant inside a lambda that captures nothing.
+  static constexpr uint64_t B = 1099511628211ULL;  // odd multiplier, arithmetic mod 2^64
   auto hash = [](const char *p, size_t n) {
     uint64_t h = 0;
     for (size_t i = 0; i < n; ++i) h = h * B + static_cast<unsigned char>(p[i]);
@@ -70,7 +71,7 @@ std::vector<std::vector<int>> species_hits(const std::vector<std::string> &queri
     std::unordered_map<uint64_t, std::vector<Query>> tab;
     std::vector<uint64_t> filter;  // bitmap of hash bits, rejects most windows before tab.find
   };
-  constexpr unsigned FILTER_BITS = 20;
+  static constexpr unsigned FILTER_BITS = 20;
   auto filter_slot = [](uint64_t h) { return h >> (64 - FILTER_BITS); };
   std::vector<LenGroup> groups;
   {

@@ -88,6 +88,14 @@ struct CompCacheSlot {
   // so they can differ from the b_compare alignments and are cached separately).
   std::unordered_map<uint64_t, std::unique_ptr<Sub, SubDelete>> final_subs;
   size_t bytes = 0;               // budget used by this slot
+
+  // Move-only, declared explicitly: MSVC's unordered_map move is not noexcept, so without the
+  // deleted copy std::vector::resize would instantiate the (ill-formed) implicit copy.
+  CompCacheSlot() = default;
+  CompCacheSlot(const CompCacheSlot &) = delete;
+  CompCacheSlot &operator=(const CompCacheSlot &) = delete;
+  CompCacheSlot(CompCacheSlot &&) = default;
+  CompCacheSlot &operator=(CompCacheSlot &&) = default;
 };
 
 struct dada2::AlignmentCache::Impl {
